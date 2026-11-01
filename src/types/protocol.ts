@@ -62,6 +62,7 @@ export interface ClientInterruptMessage {
 
 export interface ClientTranscriptMessage {
   type: 'user_transcript';
+  id?: string;
   text: string;
   isFinal: boolean;
   timestamp: number;

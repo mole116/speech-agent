@@ -31,6 +31,7 @@ export function useVoiceAgent() {
   const recognitionRef = useRef<any>(null);
   const currentTurnIdRef = useRef<string | null>(null);
   const isAiSpeakingRef = useRef<boolean>(false);
+  const isCallingRef = useRef<boolean>(false);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Audio queue player
@@ -170,10 +171,9 @@ export function useVoiceAgent() {
   handleServerMessageRef.current = handleServerMessage;
 
   /**
-   * Connect WebSocket
+   * Connect WebSocket directly to Port 3001
    */
   const connectWebSocket = useCallback(() => {
-    // If already connected or connecting, do not create another socket
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -187,7 +187,7 @@ export function useVoiceAgent() {
     const host = window.location.hostname || '127.0.0.1';
     const wsUrl = `${wsProtocol}//${host}:3001/ws`;
 
-    console.log(`[VoiceAgent] Connecting WebSocket to ${wsUrl}...`);
+    console.log(`[VoiceAgent] Connecting WebSocket directly to ${wsUrl}...`);
     let ws: WebSocket;
     try {
       ws = new WebSocket(wsUrl);
@@ -219,7 +219,7 @@ export function useVoiceAgent() {
     };
 
     ws.onclose = (event) => {
-      console.log(`[VoiceAgent] WebSocket closed (code=${event.code}). Retrying...`);
+      console.log(`[VoiceAgent] WebSocket closed (code=${event.code}). Retrying in 2s...`);
       setIsConnected(false);
       setAgentStatus('disconnected');
       wsRef.current = null;
@@ -243,13 +243,15 @@ export function useVoiceAgent() {
   }, [connectWebSocket]);
 
   /**
-   * Initializes local speech recognition (Web Speech API)
+   * Initializes local continuous speech recognition (Web Speech API)
    */
   const initSpeechRecognition = useCallback(() => {
     const win = window as unknown as IWindow;
     const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
+      console.warn('[STT] SpeechRecognition not supported in this browser.');
+      setError('Browser speech recognition unavailable. Please use Google Chrome or Safari.');
       return null;
     }
 
@@ -257,6 +259,10 @@ export function useVoiceAgent() {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      console.log('[STT] Speech recognition started actively listening.');
+    };
 
     recognition.onresult = (event: any) => {
       let interim = '';
@@ -270,13 +276,13 @@ export function useVoiceAgent() {
         }
       }
 
-      // Acoustic Echo Guard:
-      // While AI is speaking, ignore microphone SpeechRecognition bleed so the AI does not interrupt itself!
+      // Echo guard: ignore microphone input while AI is outputting speech
       if (isAiSpeakingRef.current) {
         return;
       }
 
       if (interim) {
+        setStatusDetail(`Hearing: "${interim}"...`);
         sendMessage({
           type: 'user_transcript',
           text: interim,
@@ -286,9 +292,27 @@ export function useVoiceAgent() {
       }
 
       if (finalTranscript.trim()) {
+        const text = finalTranscript.trim();
+        const userMsgId = `user_${Date.now()}`;
+        console.log('[STT] Final Recognized Speech:', text);
+        setStatusDetail(`You said: "${text}"`);
+
+        // Optimistically render in Live Transcript immediately!
+        setTranscript((prev) => [
+          ...prev,
+          {
+            id: userMsgId,
+            role: 'user',
+            text,
+            timestamp: Date.now(),
+            isFinal: true,
+          },
+        ]);
+
         sendMessage({
           type: 'user_transcript',
-          text: finalTranscript.trim(),
+          id: userMsgId,
+          text,
           isFinal: true,
           timestamp: Date.now(),
         });
@@ -298,19 +322,29 @@ export function useVoiceAgent() {
     recognition.onerror = (e: any) => {
       if (e.error !== 'no-speech' && e.error !== 'aborted') {
         console.warn('[STT] Speech recognition warning:', e.error);
+        if (e.error === 'not-allowed') {
+          setError('Microphone permission for Speech Recognition was blocked. Please allow mic access in your browser.');
+        } else if (e.error === 'network') {
+          console.warn('[STT] Speech recognition network service momentary blip.');
+        }
       }
     };
 
+    // CRITICAL: Ensure continuous listening across Chrome silence timeouts using isCallingRef!
     recognition.onend = () => {
-      if (isCalling) {
+      console.log('[STT] Recognition session ended. isCalling:', isCallingRef.current);
+      if (isCallingRef.current) {
         try {
           recognition.start();
-        } catch {}
+          console.log('[STT] Recognition session auto-restarted.');
+        } catch (err) {
+          console.warn('[STT] Auto-restart collision:', err);
+        }
       }
     };
 
     return recognition;
-  }, [isCalling, sendMessage, triggerBargeIn]);
+  }, [sendMessage]);
 
   /**
    * Starts a voice call session
@@ -318,8 +352,10 @@ export function useVoiceAgent() {
   const startCall = async () => {
     try {
       setError(null);
+      isCallingRef.current = true;
+      setIsCalling(true);
 
-      // 1. Initialize Client VAD with echo suppression
+      // 1. Initialize Client VAD with acoustic echo suppression
       const vad = new ClientVAD({
         energyThreshold: 0.030,
         bargeInThreshold: 0.14,
@@ -355,14 +391,17 @@ export function useVoiceAgent() {
         try {
           recognition.start();
           recognitionRef.current = recognition;
-        } catch {}
+        } catch (err) {
+          console.warn('[STT] Start call recognition error:', err);
+        }
       }
 
-      setIsCalling(true);
       setAgentStatus('listening');
-      setStatusDetail('Listening for speech...');
+      setStatusDetail('Listening for your voice...');
     } catch (err: unknown) {
       console.error('[VoiceAgent] Failed to start call:', err);
+      isCallingRef.current = false;
+      setIsCalling(false);
       setError((err as Error).message || 'Microphone access denied or audio device unavailable.');
     }
   };
@@ -371,6 +410,9 @@ export function useVoiceAgent() {
    * Ends the voice call session
    */
   const endCall = () => {
+    isCallingRef.current = false;
+    setIsCalling(false);
+
     if (vadRef.current) {
       vadRef.current.stop();
       vadRef.current = null;
@@ -384,22 +426,38 @@ export function useVoiceAgent() {
     }
 
     audioPlayerRef.current.cancelAllPlayback();
-    setIsCalling(false);
     setVolumeLevel(0);
     setAgentStatus('idle');
     setStatusDetail('Call ended.');
   };
 
   /**
-   * Manual text query injection for testing without mic
+   * Manual text query injection (also adds optimistically to transcript)
    */
   const sendTextQuery = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
     if (isAiSpeakingRef.current) {
       triggerBargeIn('manual');
     }
+
+    const userMsgId = `user_${Date.now()}`;
+    setTranscript((prev) => [
+      ...prev,
+      {
+        id: userMsgId,
+        role: 'user',
+        text: trimmed,
+        timestamp: Date.now(),
+        isFinal: true,
+      },
+    ]);
+
     sendMessage({
       type: 'user_transcript',
-      text,
+      id: userMsgId,
+      text: trimmed,
       isFinal: true,
       timestamp: Date.now(),
     });
@@ -415,6 +473,7 @@ export function useVoiceAgent() {
   useEffect(() => {
     connectWebSocket();
     return () => {
+      isCallingRef.current = false;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

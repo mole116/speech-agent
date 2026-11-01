@@ -125,7 +125,7 @@ wss.on('connection', (ws: WebSocket) => {
   /**
    * Handle user utterance text (from client speech recognition or STT)
    */
-  const handleUserUtterance = async (text: string) => {
+  const handleUserUtterance = async (text: string, clientMessageId?: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -143,7 +143,7 @@ wss.on('connection', (ws: WebSocket) => {
       type: 'transcript_update',
       turnId,
       entry: {
-        id: `user_${Date.now()}`,
+        id: clientMessageId || `user_${Date.now()}`,
         role: 'user',
         text: trimmed,
         timestamp: Date.now(),
@@ -311,7 +311,7 @@ wss.on('connection', (ws: WebSocket) => {
 
         case 'user_transcript':
           if (message.isFinal) {
-            await handleUserUtterance(message.text);
+            await handleUserUtterance(message.text, message.id);
           } else {
             // Interim speech feedback
             if (session.status === 'speaking' || session.status === 'thinking') {
