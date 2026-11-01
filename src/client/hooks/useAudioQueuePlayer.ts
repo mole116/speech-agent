@@ -14,6 +14,17 @@ export interface UseAudioQueuePlayerOptions {
   onSentenceEnd?: (item: QueueItem) => void;
 }
 
+// Global reference retention to prevent Chromium V8 GC from killing active utterances mid-sentence
+declare global {
+  interface Window {
+    __voiceUtterances?: SpeechSynthesisUtterance[];
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.__voiceUtterances = window.__voiceUtterances || [];
+}
+
 export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const optionsRef = useRef(options);
@@ -44,6 +55,9 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     // 1. Cancel browser speech synthesis instantly
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
+      if (window.__voiceUtterances) {
+        window.__voiceUtterances = [];
+      }
       activeUtteranceRef.current = null;
     }
 
@@ -106,27 +120,44 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
 
     // Mode B: Fast Browser SpeechSynthesis playback
     if (item.text && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      // Chrome audio queue bug workaround: resume if paused
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+
       const utterance = new SpeechSynthesisUtterance(item.text);
       utterance.rate = 1.05; // Snappy conversational rate
       utterance.pitch = 1.0;
+
+      // Keep strong reference in global array to prevent GC killing speech mid-sentence
+      const globalUtterances = window.__voiceUtterances || [];
+      globalUtterances.push(utterance);
+      window.__voiceUtterances = globalUtterances;
 
       const voices = window.speechSynthesis.getVoices();
       const naturalVoice = voices.find(
         (v) =>
           v.lang.startsWith('en') &&
-          (v.name.includes('Samantha') || v.name.includes('Daniel') || v.name.includes('Natural') || v.name.includes('Google'))
+          (v.name.includes('Samantha') || v.name.includes('Daniel') || v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Alex'))
       );
       if (naturalVoice) {
         utterance.voice = naturalVoice;
       }
 
       utterance.onend = () => {
+        // Clean up global reference
+        if (window.__voiceUtterances) {
+          window.__voiceUtterances = window.__voiceUtterances.filter((u) => u !== utterance);
+        }
         activeUtteranceRef.current = null;
         optionsRef.current.onSentenceEnd?.(item);
         playNext();
       };
 
       utterance.onerror = (e) => {
+        if (window.__voiceUtterances) {
+          window.__voiceUtterances = window.__voiceUtterances.filter((u) => u !== utterance);
+        }
         if (e.error !== 'canceled' && e.error !== 'interrupted') {
           console.error('[AudioPlayer] Utterance error:', e);
         }

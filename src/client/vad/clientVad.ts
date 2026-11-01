@@ -1,11 +1,12 @@
 /**
  * Client-Side Voice Activity Detection (VAD) & Audio Streaming Engine
- * Continuously monitors microphone input, computes energy RMS, and fires instant
- * Barge-in interrupt triggers the MOMENT speech onset is detected while AI is outputting audio.
+ * Continuously monitors microphone input, computes energy RMS, and manages
+ * acoustic echo suppression and barge-in interruption.
  */
 
 export interface ClientVadOptions {
-  energyThreshold?: number; // RMS threshold (default 0.035)
+  energyThreshold?: number; // Baseline voice threshold when AI is silent (default 0.030)
+  bargeInThreshold?: number; // Elevated threshold when AI is outputting audio through speakers (default 0.14)
   silenceTimeoutMs?: number; // Silence duration before utterance ends (default 750ms)
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
@@ -22,10 +23,13 @@ export class ClientVAD {
 
   private isSpeaking = false;
   private isAiSpeaking = false;
+  private aiSpeakingStartTime = 0;
   private silenceTimer: NodeJS.Timeout | null = null;
   private consecutiveSpeechFrames = 0;
+  private consecutiveBargeInFrames = 0;
 
   private readonly energyThreshold: number;
+  private readonly bargeInThreshold: number;
   private readonly silenceTimeoutMs: number;
   private readonly onSpeechStart?: () => void;
   private readonly onSpeechEnd?: () => void;
@@ -34,7 +38,8 @@ export class ClientVAD {
   private readonly onVolumeChange?: (volume: number) => void;
 
   constructor(options: ClientVadOptions = {}) {
-    this.energyThreshold = options.energyThreshold ?? 0.035;
+    this.energyThreshold = options.energyThreshold ?? 0.030;
+    this.bargeInThreshold = options.bargeInThreshold ?? 0.14;
     this.silenceTimeoutMs = options.silenceTimeoutMs ?? 750;
     this.onSpeechStart = options.onSpeechStart;
     this.onSpeechEnd = options.onSpeechEnd;
@@ -48,6 +53,12 @@ export class ClientVAD {
    */
   public setAiSpeaking(speaking: boolean): void {
     this.isAiSpeaking = speaking;
+    if (speaking) {
+      this.aiSpeakingStartTime = Date.now();
+      this.consecutiveBargeInFrames = 0;
+    } else {
+      this.consecutiveBargeInFrames = 0;
+    }
   }
 
   /**
@@ -86,7 +97,6 @@ export class ClientVAD {
     };
 
     this.sourceNode.connect(this.processorNode);
-    // Connect to a mute destination to keep processing alive without feedback loop
     const gainNode = this.audioContext.createGain();
     gainNode.gain.value = 0;
     this.processorNode.connect(gainNode);
@@ -117,7 +127,6 @@ export class ClientVAD {
       pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
 
-    // Convert to base64 for JSON transmission or direct binary transfer
     if (this.onAudioChunk) {
       const uint8 = new Uint8Array(pcm16.buffer);
       let binary = '';
@@ -128,21 +137,32 @@ export class ClientVAD {
       this.onAudioChunk(pcm16, base64);
     }
 
-    // 3. VAD Voice Trigger Logic
+    // 3. BARGE-IN MONITORING WHILE AI IS SPEAKING
+    if (this.isAiSpeaking) {
+      // 600ms grace period after AI speech begins to ignore initial speaker transients
+      const timeSinceAiStarted = Date.now() - this.aiSpeakingStartTime;
+      if (timeSinceAiStarted > 600 && rms >= this.bargeInThreshold) {
+        this.consecutiveBargeInFrames++;
+        // Require 4 consecutive frames (~160ms) of sustained louder speech to interrupt
+        if (this.consecutiveBargeInFrames >= 4) {
+          console.warn(`[ClientVAD] ⚡ INTENTIONAL BARGE-IN: RMS=${rms.toFixed(4)} >= ${this.bargeInThreshold}. Firing abort.`);
+          this.isAiSpeaking = false;
+          this.consecutiveBargeInFrames = 0;
+          this.onBargeIn?.(rms);
+        }
+      } else {
+        this.consecutiveBargeInFrames = 0;
+      }
+      return; // Do NOT trigger regular speech onset while AI is speaking
+    }
+
+    // 4. NORMAL USER SPEECH VAD LOGIC (when AI is silent)
     if (rms >= this.energyThreshold) {
       this.consecutiveSpeechFrames++;
 
       if (this.silenceTimer) {
         clearTimeout(this.silenceTimer);
         this.silenceTimer = null;
-      }
-
-      // BARGE-IN CHECK: Human speaks while AI is outputting audio
-      if (this.isAiSpeaking) {
-        console.warn(`[ClientVAD] ⚡ BARGE-IN DETECTED! RMS=${rms.toFixed(4)}. Firing instant KILL signal.`);
-        this.onBargeIn?.(rms);
-        // Force reset AI speaking immediately
-        this.isAiSpeaking = false;
       }
 
       if (!this.isSpeaking && this.consecutiveSpeechFrames >= 2) {
@@ -193,6 +213,7 @@ export class ClientVAD {
 
     this.isSpeaking = false;
     this.consecutiveSpeechFrames = 0;
+    this.consecutiveBargeInFrames = 0;
     console.log('[ClientVAD] Audio processing stopped and resources released.');
   }
 }

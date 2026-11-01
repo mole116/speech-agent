@@ -273,8 +273,10 @@ export function useVoiceAgent() {
         }
       }
 
-      if ((interim.length > 0 || finalTranscript.length > 0) && isAiSpeakingRef.current) {
-        triggerBargeIn('vad_barge_in');
+      // Acoustic Echo Guard:
+      // While AI is speaking, ignore microphone SpeechRecognition bleed so the AI does not interrupt itself!
+      if (isAiSpeakingRef.current) {
+        return;
       }
 
       if (interim) {
@@ -320,9 +322,10 @@ export function useVoiceAgent() {
     try {
       setError(null);
 
-      // 1. Initialize Client VAD
+      // 1. Initialize Client VAD with echo suppression
       const vad = new ClientVAD({
-        energyThreshold: 0.035,
+        energyThreshold: 0.030,
+        bargeInThreshold: 0.14,
         silenceTimeoutMs: 750,
         onSpeechStart: () => {
           sendMessage({ type: 'user_speech_start', timestamp: Date.now() });

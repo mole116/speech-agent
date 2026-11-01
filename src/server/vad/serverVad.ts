@@ -15,8 +15,10 @@ export class ServerVAD {
   private audioChunks: Buffer[] = [];
 
   private readonly energyThreshold: number;
+  private readonly bargeInThreshold: number; // Elevated threshold when AI is outputting audio
   private readonly silenceTimeoutMs: number;
-  private readonly minSpeechFrames = 2; // ~40ms minimum to trigger speech
+  private readonly minSpeechFrames = 2; // ~40ms minimum for normal speech start
+  private readonly minBargeInFrames = 4; // ~120ms of sustained louder speech for barge-in
   private readonly frameDurationMs: number;
 
   constructor(
@@ -25,6 +27,7 @@ export class ServerVAD {
     sampleRate = CONFIG.vad.sampleRate
   ) {
     this.energyThreshold = energyThreshold;
+    this.bargeInThreshold = 0.14; // Acoustic echo guard
     this.silenceTimeoutMs = silenceTimeoutMs;
     // For 512 samples at 16kHz, each frame is ~32ms
     this.frameDurationMs = (CONFIG.vad.frameSize / sampleRate) * 1000;
@@ -38,6 +41,24 @@ export class ServerVAD {
   public processAudioChunk(pcmBuffer: Buffer, isAiCurrentlySpeaking = false): VadEvent | null {
     const rms = this.calculateRms(pcmBuffer);
 
+    // 1. ACOUSTIC ECHO GUARD: While AI is speaking, ignore ambient speaker bleed
+    if (isAiCurrentlySpeaking) {
+      if (rms >= this.bargeInThreshold) {
+        this.consecutiveSpeechFrames++;
+        if (this.consecutiveSpeechFrames >= this.minBargeInFrames) {
+          this.consecutiveSpeechFrames = 0;
+          return {
+            type: 'barge_in',
+            timestamp: Date.now(),
+          };
+        }
+      } else {
+        this.consecutiveSpeechFrames = 0;
+      }
+      return null;
+    }
+
+    // 2. NORMAL SPEECH DETECTION (when AI is silent)
     if (rms >= this.energyThreshold) {
       this.consecutiveSpeechFrames++;
       this.silenceFrames = 0;
@@ -47,14 +68,6 @@ export class ServerVAD {
         this.isSpeaking = true;
         this.speechStartTimestamp = Date.now();
         this.audioChunks = [pcmBuffer];
-
-        // If AI is speaking, this is an IMMEDIATE BARGE-IN!
-        if (isAiCurrentlySpeaking) {
-          return {
-            type: 'barge_in',
-            timestamp: this.speechStartTimestamp,
-          };
-        }
 
         return {
           type: 'speech_start',
@@ -104,7 +117,6 @@ export class ServerVAD {
 
     let sumSquares = 0;
     for (let i = 0; i < buffer.length - 1; i += 2) {
-      // 16-bit signed integer [-32768, 32767]
       const sample = buffer.readInt16LE(i) / 32768.0;
       sumSquares += sample * sample;
     }
