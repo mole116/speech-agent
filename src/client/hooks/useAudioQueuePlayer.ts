@@ -52,9 +52,12 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
    * Violent Kill Switch: Immediately stops all active audio output and drains queue.
    */
   const cancelAllPlayback = useCallback(() => {
-    // 1. Cancel browser speech synthesis instantly
+    // 1. Cancel browser speech synthesis instantly and unstick queue
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.resume();
+      } catch {}
       if (window.__voiceUtterances) {
         window.__voiceUtterances = [];
       }
@@ -144,25 +147,42 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
         utterance.voice = naturalVoice;
       }
 
-      utterance.onend = () => {
-        // Clean up global reference
+      let isFinished = false;
+      let watchdogTimer: NodeJS.Timeout | null = null;
+
+      const finishUtterance = () => {
+        if (isFinished) return;
+        isFinished = true;
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
         if (window.__voiceUtterances) {
           window.__voiceUtterances = window.__voiceUtterances.filter((u) => u !== utterance);
         }
-        activeUtteranceRef.current = null;
+        if (activeUtteranceRef.current === utterance) {
+          activeUtteranceRef.current = null;
+        }
         optionsRef.current.onSentenceEnd?.(item);
         playNext();
       };
 
+      // Watchdog: If Chromium freezes and fails to fire onend, unfreeze automatically
+      const estimatedMs = Math.max(2500, (item.text.length / 13) * 1000 + 2000);
+      watchdogTimer = setTimeout(() => {
+        console.warn('[AudioPlayer] Utterance watchdog timeout, advancing queue...');
+        finishUtterance();
+      }, estimatedMs);
+
+      utterance.onend = () => {
+        finishUtterance();
+      };
+
       utterance.onerror = (e) => {
-        if (window.__voiceUtterances) {
-          window.__voiceUtterances = window.__voiceUtterances.filter((u) => u !== utterance);
-        }
         if (e.error !== 'canceled' && e.error !== 'interrupted') {
           console.error('[AudioPlayer] Utterance error:', e);
         }
-        activeUtteranceRef.current = null;
-        playNext();
+        finishUtterance();
       };
 
       activeUtteranceRef.current = utterance;

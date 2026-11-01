@@ -13,6 +13,10 @@ import {
   ToolCallLog,
 } from '../types/protocol.js';
 
+function logDebug(tag: string, ...args: unknown[]) {
+  console.log(`[${tag}]`, ...args);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -63,7 +67,7 @@ wss.on('error', (err) => {
 
 wss.on('connection', (ws: WebSocket) => {
   const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  console.log(`[WebSocket] Client connected: ${sessionId}`);
+  logDebug('WebSocket', `Client connected: ${sessionId}`);
 
   const session: ClientSession = {
     ws,
@@ -89,6 +93,7 @@ wss.on('connection', (ws: WebSocket) => {
 
   const updateStatus = (status: AgentStatus, detail?: string) => {
     session.status = status;
+    logDebug('AgentStatus', sessionId, status, detail || '');
     sendJson(ws, {
       type: 'agent_status',
       status,
@@ -99,15 +104,15 @@ wss.on('connection', (ws: WebSocket) => {
 
   /**
    * Universal Barge-in / Interruption Handler
-   * Stops active speech playback and halts generation ONLY when AI is speaking.
+   * Stops active speech playback and halts generation when AI is speaking, thinking, or running tools.
    */
   const executeBargeIn = (reason: string) => {
-    // Only interrupt if the AI is actively outputting speech!
-    if (session.status !== 'speaking') {
+    // Cannot interrupt if already idle or already interrupted
+    if (session.status === 'idle' || session.status === 'interrupted') {
       return;
     }
 
-    console.log(`[Barge-in] Triggered: ${reason}. Forcibly halting active AI speech.`);
+    logDebug('Barge-in', `Triggered: ${reason} (was: ${session.status}). Halting AI.`);
     session.agent.abortCurrentTurn(reason);
     session.tts.abort();
     session.vad.reset();
@@ -119,8 +124,6 @@ wss.on('connection', (ws: WebSocket) => {
       turnId: session.currentTurnId || undefined,
       timestamp: Date.now(),
     });
-
-    session.status = 'listening';
   };
 
   /**
@@ -130,8 +133,8 @@ wss.on('connection', (ws: WebSocket) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // If AI was actively speaking previous audio, cancel it
-    if (session.status === 'speaking') {
+    // If AI was actively processing or speaking a previous turn, immediately abort it
+    if (session.status === 'speaking' || session.status === 'thinking' || session.status === 'tool_executing') {
       executeBargeIn('new_user_utterance');
     }
 
@@ -139,7 +142,7 @@ wss.on('connection', (ws: WebSocket) => {
     session.currentTurnId = turnId;
     session.activeToolCalls.clear();
 
-    console.log(`[Utterance] User [${turnId}]: "${trimmed}"`);
+    logDebug('Utterance', `User [${turnId}]: "${trimmed}"`);
 
     // Broadcast user transcript entry
     sendJson(ws, {
@@ -157,8 +160,10 @@ wss.on('connection', (ws: WebSocket) => {
     updateStatus('thinking');
 
     // Run Vercel AI SDK pipeline
+    logDebug('LLM', `Calling streamResponse for turn ${turnId}...`);
     await session.agent.streamResponse(trimmed, {
       onTextDelta: (delta, fullText) => {
+        if (session.currentTurnId !== turnId) return;
         if (session.status !== 'speaking') {
           updateStatus('speaking');
         }
@@ -171,6 +176,7 @@ wss.on('connection', (ws: WebSocket) => {
       },
 
       onSentence: async (sentence, sentenceIndex, isFinal) => {
+        if (session.currentTurnId !== turnId) return;
         // Send sentence metadata down the WebSocket
         sendJson(ws, {
           type: 'tts_sentence',
@@ -183,7 +189,7 @@ wss.on('connection', (ws: WebSocket) => {
         // If server-side TTS audio chunks are enabled (e.g. macOS 'say'), synthesize and stream raw audio chunk
         if (CONFIG.tts.engine === 'say') {
           const chunk = await session.tts.synthesize(sentence, sentenceIndex);
-          if (chunk) {
+          if (chunk && session.currentTurnId === turnId) {
             sendJson(ws, {
               type: 'audio_chunk',
               turnId,
@@ -196,6 +202,7 @@ wss.on('connection', (ws: WebSocket) => {
       },
 
       onToolCallStart: (toolCallId, toolName, args) => {
+        if (session.currentTurnId !== turnId) return;
         updateStatus('tool_executing', `Executing ${toolName}...`);
         const toolLog: ToolCallLog = {
           id: toolCallId,
@@ -217,6 +224,7 @@ wss.on('connection', (ws: WebSocket) => {
       },
 
       onToolCallComplete: (toolCallId, toolName, result, durationMs) => {
+        if (session.currentTurnId !== turnId) return;
         const existing = session.activeToolCalls.get(toolCallId);
         if (existing) {
           existing.status = 'success';
@@ -236,7 +244,8 @@ wss.on('connection', (ws: WebSocket) => {
       },
 
       onFinish: (fullText, interrupted) => {
-        console.log(`[Finish] Assistant [${turnId}]: length=${fullText.length}, interrupted=${interrupted}`);
+        if (session.currentTurnId !== turnId) return;
+        logDebug('Finish', `Assistant [${turnId}]: length=${fullText.length}, interrupted=${interrupted}`);
 
         sendJson(ws, {
           type: 'transcript_update',
@@ -251,13 +260,12 @@ wss.on('connection', (ws: WebSocket) => {
           },
         });
 
-        if (session.status !== 'interrupted') {
-          updateStatus('idle');
-        }
+        updateStatus('idle');
       },
 
       onError: (err) => {
-        console.error(`[Error] Agent error [${turnId}]:`, err.message);
+        if (session.currentTurnId !== turnId) return;
+        logDebug('Error', `Agent error [${turnId}]:`, err.message);
         sendJson(ws, {
           type: 'error',
           message: `Ollama inference error: ${err.message}`,
@@ -285,17 +293,20 @@ wss.on('connection', (ws: WebSocket) => {
       const msgStr = data.toString('utf-8');
       const message: ClientMessage = JSON.parse(msgStr);
 
+      if (message.type !== 'audio_chunk' && message.type !== 'ping') {
+        logDebug('WS_RECV', session.id, message.type, message.type === 'user_transcript' ? `"${message.text}"` : '');
+      }
+
       switch (message.type) {
         case 'user_interrupt':
           // Explicit barge-in command (from UI button or user voice)
+          logDebug('WebSocket', `Explicit user_interrupt received: ${message.reason}`);
           executeBargeIn(`client_vad_${message.reason}`);
           break;
 
         case 'user_speech_start':
-          // Only barge-in if the AI is actively outputting speech!
-          if (session.status === 'speaking') {
-            executeBargeIn('client_vad_speech_onset');
-          } else if (session.status === 'idle') {
+          // NOTE: Do NOT barge-in on standard user_speech_start (RMS >= 0.030) as this causes speaker acoustic feedback loops.
+          if (session.status === 'idle') {
             updateStatus('listening');
           }
           break;
@@ -305,6 +316,7 @@ wss.on('connection', (ws: WebSocket) => {
 
         case 'user_transcript':
           if (message.isFinal && message.text?.trim()) {
+            logDebug('WebSocket', `Dispatching user_transcript: "${message.text.trim()}"`);
             await handleUserUtterance(message.text, message.id);
           }
           break;
@@ -316,6 +328,7 @@ wss.on('connection', (ws: WebSocket) => {
             const vadEvent = session.vad.processAudioChunk(pcmBuffer, isAiSpeaking);
 
             if (vadEvent?.type === 'barge_in' && session.status === 'speaking') {
+              logDebug('WebSocket', 'Server VAD detected loud sustained barge-in during AI speech.');
               executeBargeIn('server_vad_base64_barge_in');
             }
           }
@@ -324,7 +337,7 @@ wss.on('connection', (ws: WebSocket) => {
         case 'set_config':
           if (message.config.model) {
             CONFIG.ollama.model = message.config.model;
-            console.log(`[Config] Model changed to: ${CONFIG.ollama.model}`);
+            logDebug('Config', `Model changed to: ${CONFIG.ollama.model}`);
           }
           if (message.config.ttsEngine) {
             CONFIG.tts.engine = message.config.ttsEngine;
@@ -332,29 +345,30 @@ wss.on('connection', (ws: WebSocket) => {
           break;
 
         case 'ping':
+          logDebug('PING', `From ${session.id}`);
           sendJson(ws, { type: 'pong', timestamp: Date.now() });
           break;
       }
     } catch (err) {
-      console.error('[WebSocket] Message handling error:', err);
+      logDebug('WebSocket', 'Message handling error:', err);
     }
   });
 
   ws.on('close', () => {
-    console.log(`[WebSocket] Client disconnected: ${sessionId}`);
+    logDebug('WebSocket', `Client disconnected: ${sessionId}`);
     session.agent.abortCurrentTurn('client_disconnect');
     session.tts.abort();
     sessions.delete(ws);
   });
 
   ws.on('error', (err) => {
-    console.error(`[WebSocket] Socket error (${sessionId}):`, err);
+    logDebug('WebSocket', `Socket error (${sessionId}):`, err);
   });
 });
 
-server.listen(CONFIG.port, '0.0.0.0', () => {
+server.listen(CONFIG.port, () => {
   console.log(`=======================================================`);
-  console.log(`🎙️  Local Voice Agent Server running on http://localhost:${CONFIG.port} and http://127.0.0.1:${CONFIG.port}`);
+  console.log(`🎙️  Local Voice Agent Server running on http://127.0.0.1:${CONFIG.port} and http://localhost:${CONFIG.port}`);
   console.log(`📡 WebSocket Channel listening at ws://127.0.0.1:${CONFIG.port}/ws`);
   console.log(`🧠 LLM Backend: Ollama (${CONFIG.ollama.baseUrl}) -> ${CONFIG.ollama.model}`);
   console.log(`⚡ VAD Sensitivity: RMS threshold = ${CONFIG.vad.energyThreshold}`);

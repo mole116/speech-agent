@@ -91,7 +91,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
       })}
 
       {/* Real-time Streaming Assistant Chunk */}
-      {currentAssistantText && (
+      {currentAssistantText ? (
         <div className="flex flex-col items-start space-y-1">
           <div className="flex items-center space-x-2 px-1">
             <span className="text-xs font-medium text-emerald-400 flex items-center gap-1">
@@ -107,7 +107,21 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             </p>
           </div>
         </div>
-      )}
+      ) : isStreaming ? (
+        <div className="flex flex-col items-start space-y-1 animate-fade-in">
+          <div className="flex items-center space-x-2 px-1">
+            <span className="text-xs font-medium text-purple-400 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+              Thinking & Reasoning...
+            </span>
+          </div>
+          <div className="rounded-2xl rounded-bl-none px-4 py-3 bg-slate-800/80 border border-purple-500/30 flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce" />
+            <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce [animation-delay:0.2s]" />
+            <span className="w-2 h-2 rounded-full bg-purple-400 animate-bounce [animation-delay:0.4s]" />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

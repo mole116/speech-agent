@@ -5,6 +5,10 @@ import { CONFIG } from '../config.js';
 import { createAgentTools } from './tools.js';
 import { SentenceSegmenter } from '../tts/sentenceSegmenter.js';
 
+function logAgent(tag: string, ...args: unknown[]) {
+  console.log(`[AGENT:${tag}]`, ...args);
+}
+
 export interface AgentCallbacks {
   onTextDelta?: (delta: string, fullText: string) => void;
   onSentence?: (sentence: string, sentenceIndex: number, isFinal: boolean) => void;
@@ -79,7 +83,7 @@ export class VoiceAgentOrchestrator {
       // Use OpenAI-compatible model endpoint for maximum Ollama streaming compatibility
       const model = this.openaiOllama(CONFIG.ollama.model);
 
-      console.log(`[Agent] Calling Ollama model: ${CONFIG.ollama.model}`);
+      logAgent('Start', `Calling Ollama model ${CONFIG.ollama.model} with history length ${this.conversationHistory.length}`);
 
       const result = streamText({
         model,
@@ -95,6 +99,7 @@ export class VoiceAgentOrchestrator {
       for await (const part of result.fullStream) {
         if (abortController.signal.aborted) {
           interrupted = true;
+          logAgent('Aborted', 'Stream loop aborted via signal');
           break;
         }
 
@@ -103,18 +108,32 @@ export class VoiceAgentOrchestrator {
 
           // Check if Ollama emitted a JSON tool call block in text
           const trimmed = accumulatedText.trim();
-          if (trimmed.startsWith('{') && trimmed.includes('"name"') && (trimmed.includes('"arguments"') || trimmed.endsWith('}'))) {
+          const looksLikeToolJson =
+            trimmed.startsWith('{') ||
+            trimmed.startsWith('```json') ||
+            trimmed.startsWith('```') ||
+            trimmed.includes('"name":');
+
+          if (looksLikeToolJson) {
+            // Try parsing JSON block directly or extracting from code fences
             try {
-              const parsed = JSON.parse(trimmed);
+              let jsonStr = trimmed;
+              if (jsonStr.startsWith('```json')) {
+                jsonStr = jsonStr.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+              } else if (jsonStr.startsWith('```')) {
+                jsonStr = jsonStr.replace(/^```\s*/, '').replace(/\s*```$/, '');
+              }
+              const parsed = JSON.parse(jsonStr);
               if (parsed.name && typeof parsed.name === 'string') {
                 detectedToolCall = parsed;
               }
             } catch {
-              // Incomplete JSON chunk, keep accumulating
+              // Incomplete JSON chunk, keep accumulating without emitting to TTS
             }
           }
 
-          if (!detectedToolCall) {
+          // Only stream text deltas down to user/TTS if this is NOT a tool call payload
+          if (!detectedToolCall && !looksLikeToolJson) {
             callbacks.onTextDelta?.(part.textDelta, accumulatedText);
             const sentences = segmenter.push(part.textDelta);
             for (const sentence of sentences) {
@@ -122,23 +141,22 @@ export class VoiceAgentOrchestrator {
             }
           }
         } else if (part.type === 'tool-call') {
-          console.log(`[Agent] Native tool call: ${part.toolName}`, part.args);
+          logAgent('ToolCall', `Native tool call: ${part.toolName}`, part.args);
         } else if (part.type === 'tool-result') {
-          console.log(`[Agent] Native tool executed: ${part.toolName}`);
+          logAgent('ToolResult', `Native tool executed: ${part.toolName}`);
         } else if (part.type === 'error') {
-          console.error('[Agent] Stream part error:', part.error);
+          logAgent('Error', 'Stream part error:', part.error);
         }
       }
+
+      logAgent('LoopDone', `fullStream complete. detectedToolCall=${!!detectedToolCall}, accumulatedLength=${accumulatedText.length}`);
 
       // If Ollama returned a tool call JSON string, execute it mid-call and summarize
       if (detectedToolCall && !abortController.signal.aborted) {
         const { name, arguments: args } = detectedToolCall;
-        const toolCallId = `call_${Date.now()}_${name}`;
         console.log(`[Agent] Executing tool '${name}' with args:`, args);
 
-        callbacks.onToolCallStart?.(toolCallId, name, args || {});
         const startTime = Date.now();
-
         let toolResult: unknown = null;
         const toolDef = (toolHandlers as Record<string, any>)[name];
         if (toolDef && typeof toolDef.execute === 'function') {
@@ -152,7 +170,6 @@ export class VoiceAgentOrchestrator {
         }
 
         const durationMs = Date.now() - startTime;
-        callbacks.onToolCallComplete?.(toolCallId, name, toolResult, durationMs);
 
         // Feed tool output back to Ollama to generate final spoken voice answer
         console.log(`[Agent] Tool '${name}' completed in ${durationMs}ms. Generating voice summary...`);

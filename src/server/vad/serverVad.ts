@@ -17,8 +17,8 @@ export class ServerVAD {
   private readonly energyThreshold: number;
   private readonly bargeInThreshold: number; // Elevated threshold when AI is outputting audio
   private readonly silenceTimeoutMs: number;
-  private readonly minSpeechFrames = 2; // ~40ms minimum for normal speech start
-  private readonly minBargeInFrames = 4; // ~120ms of sustained louder speech for barge-in
+  private readonly minSpeechFrames: number = 2; // ~40ms minimum for normal speech start
+  private readonly minBargeInFrames: number = 8; // ~250ms of sustained louder speech for barge-in
   private readonly frameDurationMs: number;
 
   constructor(
@@ -27,7 +27,7 @@ export class ServerVAD {
     sampleRate = CONFIG.vad.sampleRate
   ) {
     this.energyThreshold = energyThreshold;
-    this.bargeInThreshold = 0.14; // Acoustic echo guard
+    this.bargeInThreshold = 0.28; // Elevated threshold to prevent speaker audio feedback
     this.silenceTimeoutMs = silenceTimeoutMs;
     // For 512 samples at 16kHz, each frame is ~32ms
     this.frameDurationMs = (CONFIG.vad.frameSize / sampleRate) * 1000;

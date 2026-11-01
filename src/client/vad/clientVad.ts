@@ -6,8 +6,9 @@
 
 export interface ClientVadOptions {
   energyThreshold?: number; // Baseline voice threshold when AI is silent (default 0.030)
-  bargeInThreshold?: number; // Elevated threshold when AI is outputting audio through speakers (default 0.14)
+  bargeInThreshold?: number; // Elevated threshold when AI is outputting audio through speakers (default 0.28)
   silenceTimeoutMs?: number; // Silence duration before utterance ends (default 750ms)
+  enableAutoBargeIn?: boolean; // Whether to trigger VAD barge-in automatically or rely on manual button
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
   onBargeIn?: (rms: number) => void;
@@ -31,6 +32,7 @@ export class ClientVAD {
   private readonly energyThreshold: number;
   private readonly bargeInThreshold: number;
   private readonly silenceTimeoutMs: number;
+  private readonly enableAutoBargeIn: boolean;
   private readonly onSpeechStart?: () => void;
   private readonly onSpeechEnd?: () => void;
   private readonly onBargeIn?: (rms: number) => void;
@@ -39,8 +41,9 @@ export class ClientVAD {
 
   constructor(options: ClientVadOptions = {}) {
     this.energyThreshold = options.energyThreshold ?? 0.030;
-    this.bargeInThreshold = options.bargeInThreshold ?? 0.14;
+    this.bargeInThreshold = options.bargeInThreshold ?? 0.28;
     this.silenceTimeoutMs = options.silenceTimeoutMs ?? 750;
+    this.enableAutoBargeIn = options.enableAutoBargeIn ?? true;
     this.onSpeechStart = options.onSpeechStart;
     this.onSpeechEnd = options.onSpeechEnd;
     this.onBargeIn = options.onBargeIn;
@@ -139,19 +142,21 @@ export class ClientVAD {
 
     // 3. BARGE-IN MONITORING WHILE AI IS SPEAKING
     if (this.isAiSpeaking) {
-      // 600ms grace period after AI speech begins to ignore initial speaker transients
-      const timeSinceAiStarted = Date.now() - this.aiSpeakingStartTime;
-      if (timeSinceAiStarted > 600 && rms >= this.bargeInThreshold) {
-        this.consecutiveBargeInFrames++;
-        // Require 4 consecutive frames (~160ms) of sustained louder speech to interrupt
-        if (this.consecutiveBargeInFrames >= 4) {
-          console.warn(`[ClientVAD] ⚡ INTENTIONAL BARGE-IN: RMS=${rms.toFixed(4)} >= ${this.bargeInThreshold}. Firing abort.`);
-          this.isAiSpeaking = false;
+      if (this.enableAutoBargeIn) {
+        // 800ms grace period after AI speech begins to ignore speaker transients
+        const timeSinceAiStarted = Date.now() - this.aiSpeakingStartTime;
+        if (timeSinceAiStarted > 800 && rms >= this.bargeInThreshold) {
+          this.consecutiveBargeInFrames++;
+          // Require 8 consecutive frames (~320ms) of sustained louder speech to interrupt
+          if (this.consecutiveBargeInFrames >= 8) {
+            console.warn(`[ClientVAD] ⚡ INTENTIONAL BARGE-IN: RMS=${rms.toFixed(4)} >= ${this.bargeInThreshold}. Firing abort.`);
+            this.isAiSpeaking = false;
+            this.consecutiveBargeInFrames = 0;
+            this.onBargeIn?.(rms);
+          }
+        } else {
           this.consecutiveBargeInFrames = 0;
-          this.onBargeIn?.(rms);
         }
-      } else {
-        this.consecutiveBargeInFrames = 0;
       }
       return; // Do NOT trigger regular speech onset while AI is speaking
     }

@@ -31,18 +31,23 @@ export function useVoiceAgent() {
   const recognitionRef = useRef<any>(null);
   const currentTurnIdRef = useRef<string | null>(null);
   const isAiSpeakingRef = useRef<boolean>(false);
+  const aiSpeechEndTimeRef = useRef<number>(0);
   const isCallingRef = useRef<boolean>(false);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingMessagesRef = useRef<ClientMessage[]>([]);
+  const turnTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Audio queue player
   const audioPlayer = useAudioQueuePlayer({
     onPlaybackStateChange: (isPlaying) => {
       isAiSpeakingRef.current = isPlaying;
+      if (!isPlaying) {
+        aiSpeechEndTimeRef.current = Date.now();
+        setAgentStatus((prev) => (prev === 'speaking' ? 'idle' : prev));
+      }
       if (vadRef.current) {
         vadRef.current.setAiSpeaking(isPlaying);
-      }
-      if (!isPlaying) {
-        setAgentStatus((prev) => (prev === 'speaking' ? 'idle' : prev));
       }
     },
   });
@@ -50,9 +55,17 @@ export function useVoiceAgent() {
   const audioPlayerRef = useRef(audioPlayer);
   audioPlayerRef.current = audioPlayer;
 
+  const connectWebSocketRef = useRef<() => void>(() => {});
+
   const sendMessage = useCallback((msg: ClientMessage) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
+    } else {
+      console.warn(`[VoiceAgent] WebSocket not open (readyState=${wsRef.current?.readyState}). Buffering message:`, msg.type);
+      pendingMessagesRef.current.push(msg);
+      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+        connectWebSocketRef.current();
+      }
     }
   }, []);
 
@@ -87,6 +100,12 @@ export function useVoiceAgent() {
    * Message handler from server
    */
   const handleServerMessage = useCallback((msg: ServerMessage) => {
+    // Clear watchdog timer whenever active response updates arrive
+    if (msg.type !== 'pong' && msg.type !== 'session_info' && turnTimeoutRef.current) {
+      clearTimeout(turnTimeoutRef.current);
+      turnTimeoutRef.current = null;
+    }
+
     switch (msg.type) {
       case 'session_info':
         setModelName(msg.model);
@@ -184,7 +203,8 @@ export function useVoiceAgent() {
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname || '127.0.0.1';
+    // Force IPv4 loopback 127.0.0.1 on localhost to avoid macOS IPv6 ::1 ECONNREFUSED issues
+    const host = window.location.hostname === 'localhost' || !window.location.hostname ? '127.0.0.1' : window.location.hostname;
     const wsUrl = `${wsProtocol}//${host}:3001/ws`;
 
     console.log(`[VoiceAgent] Connecting WebSocket directly to ${wsUrl}...`);
@@ -200,6 +220,12 @@ export function useVoiceAgent() {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      // Guard against old/zombie sockets from previous React mounts
+      if (wsRef.current !== ws) {
+        try { ws.close(); } catch {}
+        return;
+      }
+
       console.log('[VoiceAgent] WebSocket connection established successfully.');
       setIsConnected(true);
       setError(null);
@@ -207,11 +233,32 @@ export function useVoiceAgent() {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+
+      // Flush any queued messages that were attempted while connecting
+      while (pendingMessagesRef.current.length > 0) {
+        const queued = pendingMessagesRef.current.shift()!;
+        console.log(`[VoiceAgent] 🚀 Sending buffered message: ${queued.type}`);
+        ws.send(JSON.stringify(queued));
+      }
+
+      // Heartbeat ping every 10s to keep connection alive
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+      pingIntervalRef.current = setInterval(() => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+        }
+      }, 10000);
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type !== 'pong') {
+          console.log(`[VoiceAgent] ⬇️ Server event: ${msg.type}`, msg.status || msg.toolName || '');
+        }
         handleServerMessageRef.current(msg);
       } catch (err) {
         console.error('[VoiceAgent] Failed to parse server message:', err);
@@ -219,7 +266,14 @@ export function useVoiceAgent() {
     };
 
     ws.onclose = (event) => {
+      // Guard against unmounted sockets stomping on active connections
+      if (wsRef.current !== ws) return;
+
       console.log(`[VoiceAgent] WebSocket closed (code=${event.code}). Retrying in 2s...`);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
       setIsConnected(false);
       setAgentStatus('disconnected');
       wsRef.current = null;
@@ -227,11 +281,14 @@ export function useVoiceAgent() {
     };
 
     ws.onerror = (err) => {
+      if (wsRef.current !== ws) return;
       console.warn('[VoiceAgent] WebSocket error:', err);
       setError('Cannot connect to local Voice Agent server (Port 3001). Retrying...');
       setIsConnected(false);
     };
   }, []);
+
+  connectWebSocketRef.current = connectWebSocket;
 
   const scheduleReconnect = useCallback(() => {
     if (!reconnectTimerRef.current) {
@@ -276,8 +333,9 @@ export function useVoiceAgent() {
         }
       }
 
-      // Echo guard: ignore microphone input while AI is outputting speech
-      if (isAiSpeakingRef.current) {
+      // Echo guard: ignore microphone input while AI is outputting speech or within 600ms cooldown
+      const now = Date.now();
+      if (isAiSpeakingRef.current || now < aiSpeechEndTimeRef.current + 600) {
         return;
       }
 
@@ -289,7 +347,16 @@ export function useVoiceAgent() {
         const text = finalTranscript.trim();
         const userMsgId = `user_${Date.now()}`;
         console.log('[STT] Final Recognized Speech:', text);
-        setStatusDetail(`You said: "${text}"`);
+        setAgentStatus('thinking');
+        setStatusDetail(`Processing: "${text}"`);
+
+        // Turn watchdog: prevent UI from getting stuck if server hangs (45s for local 32B model inference)
+        if (turnTimeoutRef.current) clearTimeout(turnTimeoutRef.current);
+        turnTimeoutRef.current = setTimeout(() => {
+          console.warn('[VoiceAgent] Turn timeout after 45s');
+          setAgentStatus((prev) => (prev === 'thinking' || prev === 'tool_executing' ? 'idle' : prev));
+          setStatusDetail('Response timed out. Please try again.');
+        }, 45000);
 
         // Optimistically render in Live Transcript immediately!
         setTranscript((prev) => [
@@ -352,8 +419,9 @@ export function useVoiceAgent() {
       // 1. Initialize Client VAD with acoustic echo suppression
       const vad = new ClientVAD({
         energyThreshold: 0.030,
-        bargeInThreshold: 0.14,
+        bargeInThreshold: 0.28,
         silenceTimeoutMs: 750,
+        enableAutoBargeIn: true,
         onSpeechStart: () => {
           sendMessage({ type: 'user_speech_start', timestamp: Date.now() });
         },
@@ -437,6 +505,17 @@ export function useVoiceAgent() {
     }
 
     const userMsgId = `user_${Date.now()}`;
+    setAgentStatus('thinking');
+    setStatusDetail(`Processing: "${trimmed}"`);
+
+    // Turn watchdog: prevent UI from getting stuck if server hangs (45s for local 32B model inference)
+    if (turnTimeoutRef.current) clearTimeout(turnTimeoutRef.current);
+    turnTimeoutRef.current = setTimeout(() => {
+      console.warn('[VoiceAgent] Turn timeout after 45s');
+      setAgentStatus((prev) => (prev === 'thinking' || prev === 'tool_executing' ? 'idle' : prev));
+      setStatusDetail('Response timed out. Please try again.');
+    }, 45000);
+
     setTranscript((prev) => [
       ...prev,
       {
@@ -468,6 +547,14 @@ export function useVoiceAgent() {
     connectWebSocket();
     return () => {
       isCallingRef.current = false;
+      if (turnTimeoutRef.current) {
+        clearTimeout(turnTimeoutRef.current);
+        turnTimeoutRef.current = null;
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
