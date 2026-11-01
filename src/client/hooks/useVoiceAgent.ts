@@ -184,11 +184,8 @@ export function useVoiceAgent() {
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // When served via Vite dev server, connect via same origin proxy
-    const wsUrl =
-      window.location.port === '5173'
-        ? `${wsProtocol}//${window.location.host}/ws`
-        : `${wsProtocol}//127.0.0.1:3001/ws`;
+    const host = window.location.hostname || '127.0.0.1';
+    const wsUrl = `${wsProtocol}//${host}:3001/ws`;
 
     console.log(`[VoiceAgent] Connecting WebSocket to ${wsUrl}...`);
     let ws: WebSocket;

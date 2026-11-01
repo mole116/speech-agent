@@ -57,6 +57,10 @@ function sendJson(ws: WebSocket, message: ServerMessage): void {
   }
 }
 
+wss.on('error', (err) => {
+  console.error('[WebSocketServer] Error:', err);
+});
+
 wss.on('connection', (ws: WebSocket) => {
   const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   console.log(`[WebSocket] Client connected: ${sessionId}`);

@@ -6,12 +6,8 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0',
+    // Direct WebSocket connection to port 3001 eliminates Vite http-proxy EPIPE collisions
     proxy: {
-      '/ws': {
-        target: 'ws://127.0.0.1:3001',
-        ws: true,
-        changeOrigin: true,
-      },
       '/api': {
         target: 'http://127.0.0.1:3001',
         changeOrigin: true,
