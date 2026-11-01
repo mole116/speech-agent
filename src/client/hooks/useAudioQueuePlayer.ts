@@ -16,6 +16,9 @@ export interface UseAudioQueuePlayerOptions {
 
 export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
   const queueRef = useRef<QueueItem[]>([]);
   const isPlayingRef = useRef(false);
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
@@ -38,8 +41,6 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
    * Violent Kill Switch: Immediately stops all active audio output and drains queue.
    */
   const cancelAllPlayback = useCallback(() => {
-    console.warn('[AudioPlayer] 🛑 VIOLENT CANCEL: Purging playback queue and aborting audio output.');
-
     // 1. Cancel browser speech synthesis instantly
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -62,8 +63,8 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     isPlayingRef.current = false;
     activeTurnIdRef.current = null;
     setIsPlaying(false);
-    options.onPlaybackStateChange?.(false);
-  }, [options]);
+    optionsRef.current.onPlaybackStateChange?.(false);
+  }, []);
 
   /**
    * Plays the next item in the queue
@@ -72,16 +73,16 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     if (queueRef.current.length === 0) {
       isPlayingRef.current = false;
       setIsPlaying(false);
-      options.onPlaybackStateChange?.(false);
+      optionsRef.current.onPlaybackStateChange?.(false);
       return;
     }
 
     isPlayingRef.current = true;
     setIsPlaying(true);
-    options.onPlaybackStateChange?.(true);
+    optionsRef.current.onPlaybackStateChange?.(true);
 
     const item = queueRef.current.shift()!;
-    options.onSentenceStart?.(item);
+    optionsRef.current.onSentenceStart?.(item);
 
     // Mode A: Raw AudioBuffer playback
     if (item.audioBuffer) {
@@ -95,7 +96,7 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
         if (activeSourceRef.current === source) {
           activeSourceRef.current = null;
         }
-        options.onSentenceEnd?.(item);
+        optionsRef.current.onSentenceEnd?.(item);
         playNext();
       };
 
@@ -106,10 +107,9 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     // Mode B: Fast Browser SpeechSynthesis playback
     if (item.text && typeof window !== 'undefined' && 'speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(item.text);
-      utterance.rate = 1.05; // Slightly faster for snappier conversation
+      utterance.rate = 1.05; // Snappy conversational rate
       utterance.pitch = 1.0;
 
-      // Select natural English voice if available
       const voices = window.speechSynthesis.getVoices();
       const naturalVoice = voices.find(
         (v) =>
@@ -122,7 +122,7 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
 
       utterance.onend = () => {
         activeUtteranceRef.current = null;
-        options.onSentenceEnd?.(item);
+        optionsRef.current.onSentenceEnd?.(item);
         playNext();
       };
 
@@ -137,17 +137,15 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
       activeUtteranceRef.current = utterance;
       window.speechSynthesis.speak(utterance);
     } else {
-      // Fallback
       playNext();
     }
-  }, [getAudioContext, options]);
+  }, [getAudioContext]);
 
   /**
    * Enqueues a synthesized sentence for speech output
    */
   const enqueueSentence = useCallback(
     (text: string, turnId: string, sentenceIndex: number) => {
-      // If turn ID changed without cancel, clear previous stale turns
       if (activeTurnIdRef.current && activeTurnIdRef.current !== turnId) {
         cancelAllPlayback();
       }
@@ -168,7 +166,7 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
   );
 
   /**
-   * Enqueues a raw audio buffer (e.g. from server-side TTS WAV/AIFF)
+   * Enqueues a raw audio buffer
    */
   const enqueueAudioChunk = useCallback(
     async (base64Data: string, turnId: string, sentenceIndex: number) => {

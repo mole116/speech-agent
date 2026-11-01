@@ -9,7 +9,6 @@ import {
 import { ClientVAD } from '../vad/clientVad.js';
 import { useAudioQueuePlayer } from './useAudioQueuePlayer.js';
 
-// Extend window for Web Speech API
 interface IWindow extends Window {
   webkitSpeechRecognition?: any;
   SpeechRecognition?: any;
@@ -34,65 +33,226 @@ export function useVoiceAgent() {
   const isAiSpeakingRef = useRef<boolean>(false);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Send message helper
-  const sendMessage = useCallback((msg: ClientMessage) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
-    }
-  }, []);
-
-  // Audio queue player for streamed TTS sentences and audio chunks
+  // Audio queue player
   const audioPlayer = useAudioQueuePlayer({
     onPlaybackStateChange: (isPlaying) => {
       isAiSpeakingRef.current = isPlaying;
       if (vadRef.current) {
         vadRef.current.setAiSpeaking(isPlaying);
       }
-      if (!isPlaying && agentStatus === 'speaking') {
-        setAgentStatus('idle');
+      if (!isPlaying) {
+        setAgentStatus((prev) => (prev === 'speaking' ? 'idle' : prev));
       }
     },
   });
 
+  const audioPlayerRef = useRef(audioPlayer);
+  audioPlayerRef.current = audioPlayer;
+
+  const sendMessage = useCallback((msg: ClientMessage) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
   /**
    * Universal Barge-in Kill Switch
-   * Immediately clears client audio queue, halts speech output, and notifies backend.
    */
-  const triggerBargeIn = useCallback(
-    (reason: 'vad_barge_in' | 'manual' = 'manual') => {
-      console.warn(`[VoiceAgent] 🚨 BARGE-IN TRIGGERED: ${reason}`);
+  const triggerBargeIn = useCallback((reason: 'vad_barge_in' | 'manual' = 'manual') => {
+    console.warn(`[VoiceAgent] 🚨 BARGE-IN TRIGGERED: ${reason}`);
 
-      // 1. Instantly kill audio playback and clear queue
-      audioPlayer.cancelAllPlayback();
-      isAiSpeakingRef.current = false;
-      if (vadRef.current) {
-        vadRef.current.setAiSpeaking(false);
-      }
+    audioPlayerRef.current.cancelAllPlayback();
+    isAiSpeakingRef.current = false;
+    if (vadRef.current) {
+      vadRef.current.setAiSpeaking(false);
+    }
 
-      // 2. Fire immediate interrupt signal to WebSocket server
-      sendMessage({
-        type: 'user_interrupt',
-        reason,
-        timestamp: Date.now(),
-      });
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'user_interrupt',
+          reason,
+          timestamp: Date.now(),
+        })
+      );
+    }
 
-      // 3. Update current assistant response in transcript as interrupted
-      setCurrentAssistantText((prev) => (prev ? `${prev} [interrupted]` : ''));
-      setAgentStatus('interrupted');
-      setStatusDetail('Interrupted by user');
-    },
-    [audioPlayer, sendMessage, agentStatus]
-  );
+    setCurrentAssistantText((prev) => (prev ? `${prev} [interrupted]` : ''));
+    setAgentStatus('interrupted');
+    setStatusDetail('Interrupted by user');
+  }, []);
 
   /**
-   * Initializes local speech recognition (Web Speech API) for fast, free STT on macOS
+   * Message handler from server
+   */
+  const handleServerMessage = useCallback((msg: ServerMessage) => {
+    switch (msg.type) {
+      case 'session_info':
+        setModelName(msg.model);
+        setAgentStatus('idle');
+        break;
+
+      case 'agent_status':
+        setAgentStatus(msg.status);
+        if (msg.detail) setStatusDetail(msg.detail);
+        break;
+
+      case 'text_delta':
+        currentTurnIdRef.current = msg.turnId;
+        setCurrentAssistantText(msg.fullText);
+        break;
+
+      case 'tts_sentence':
+        audioPlayerRef.current.enqueueSentence(msg.text, msg.turnId, msg.sentenceIndex);
+        break;
+
+      case 'audio_chunk':
+        audioPlayerRef.current.enqueueAudioChunk(msg.data, msg.turnId, msg.sentenceIndex);
+        break;
+
+      case 'tool_call_start': {
+        const log: ToolCallLog = {
+          id: msg.toolCallId,
+          name: msg.toolName,
+          args: msg.args,
+          status: 'calling',
+          timestamp: msg.timestamp,
+        };
+        setToolLogs((prev) => [...prev, log]);
+        break;
+      }
+
+      case 'tool_call_complete':
+        setToolLogs((prev) =>
+          prev.map((log) =>
+            log.id === msg.toolCallId
+              ? {
+                  ...log,
+                  status: 'success',
+                  result: msg.result,
+                  durationMs: msg.durationMs,
+                }
+              : log
+          )
+        );
+        break;
+
+      case 'interrupt_confirmed':
+        audioPlayerRef.current.cancelAllPlayback();
+        isAiSpeakingRef.current = false;
+        setAgentStatus('listening');
+        setStatusDetail('Interrupted. Listening...');
+        break;
+
+      case 'transcript_update':
+        setTranscript((prev) => {
+          const idx = prev.findIndex((e) => e.id === msg.entry.id);
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = msg.entry;
+            return updated;
+          }
+          return [...prev, msg.entry];
+        });
+        if (msg.entry.role === 'assistant') {
+          setCurrentAssistantText('');
+        }
+        break;
+
+      case 'error':
+        setError(msg.message);
+        setAgentStatus('idle');
+        break;
+    }
+  }, []);
+
+  const handleServerMessageRef = useRef(handleServerMessage);
+  handleServerMessageRef.current = handleServerMessage;
+
+  /**
+   * Connect WebSocket
+   */
+  const connectWebSocket = useCallback(() => {
+    // If already connected or connecting, do not create another socket
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // When served via Vite dev server, connect via same origin proxy
+    const wsUrl =
+      window.location.port === '5173'
+        ? `${wsProtocol}//${window.location.host}/ws`
+        : `${wsProtocol}//127.0.0.1:3001/ws`;
+
+    console.log(`[VoiceAgent] Connecting WebSocket to ${wsUrl}...`);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (e) {
+      console.error('[VoiceAgent] Socket instantiation error:', e);
+      scheduleReconnect();
+      return;
+    }
+
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[VoiceAgent] WebSocket connection established successfully.');
+      setIsConnected(true);
+      setError(null);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleServerMessageRef.current(msg);
+      } catch (err) {
+        console.error('[VoiceAgent] Failed to parse server message:', err);
+      }
+    };
+
+    ws.onclose = (event) => {
+      console.log(`[VoiceAgent] WebSocket closed (code=${event.code}). Retrying...`);
+      setIsConnected(false);
+      setAgentStatus('disconnected');
+      wsRef.current = null;
+      scheduleReconnect();
+    };
+
+    ws.onerror = (err) => {
+      console.warn('[VoiceAgent] WebSocket error:', err);
+      setError('Cannot connect to local Voice Agent server (Port 3001). Retrying...');
+      setIsConnected(false);
+    };
+  }, []);
+
+  const scheduleReconnect = useCallback(() => {
+    if (!reconnectTimerRef.current) {
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        connectWebSocket();
+      }, 2000);
+    }
+  }, [connectWebSocket]);
+
+  /**
+   * Initializes local speech recognition (Web Speech API)
    */
   const initSpeechRecognition = useCallback(() => {
     const win = window as unknown as IWindow;
     const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      console.warn('[STT] Web Speech API not supported in this browser. Using raw audio VAD stream only.');
       return null;
     }
 
@@ -113,7 +273,6 @@ export function useVoiceAgent() {
         }
       }
 
-      // If user starts talking while AI is outputting, trigger barge-in!
       if ((interim.length > 0 || finalTranscript.length > 0) && isAiSpeakingRef.current) {
         triggerBargeIn('vad_barge_in');
       }
@@ -144,13 +303,10 @@ export function useVoiceAgent() {
     };
 
     recognition.onend = () => {
-      // Auto-restart recognition if call is still active
       if (isCalling) {
         try {
           recognition.start();
-        } catch {
-          // Ignore restart collisions
-        }
+        } catch {}
       }
     };
 
@@ -158,175 +314,7 @@ export function useVoiceAgent() {
   }, [isCalling, sendMessage, triggerBargeIn]);
 
   /**
-   * Handles incoming WebSocket messages from the server
-   */
-  const handleServerMessage = useCallback(
-    (msg: ServerMessage) => {
-      switch (msg.type) {
-        case 'session_info':
-          setModelName(msg.model);
-          setAgentStatus('idle');
-          break;
-
-        case 'agent_status':
-          setAgentStatus(msg.status);
-          if (msg.detail) setStatusDetail(msg.detail);
-          break;
-
-        case 'text_delta':
-          currentTurnIdRef.current = msg.turnId;
-          setCurrentAssistantText(msg.fullText);
-          break;
-
-        case 'tts_sentence':
-          // Streamed sentence for TTS playback
-          audioPlayer.enqueueSentence(msg.text, msg.turnId, msg.sentenceIndex);
-          break;
-
-        case 'audio_chunk':
-          // Raw synthesized audio buffer from backend (e.g. macOS 'say')
-          audioPlayer.enqueueAudioChunk(msg.data, msg.turnId, msg.sentenceIndex);
-          break;
-
-        case 'tool_call_start': {
-          const log: ToolCallLog = {
-            id: msg.toolCallId,
-            name: msg.toolName,
-            args: msg.args,
-            status: 'calling',
-            timestamp: msg.timestamp,
-          };
-          setToolLogs((prev) => [...prev, log]);
-          break;
-        }
-
-        case 'tool_call_complete':
-          setToolLogs((prev) =>
-            prev.map((log) =>
-              log.id === msg.toolCallId
-                ? {
-                    ...log,
-                    status: 'success',
-                    result: msg.result,
-                    durationMs: msg.durationMs,
-                  }
-                : log
-            )
-          );
-          break;
-
-        case 'interrupt_confirmed':
-          // Server confirmed generation abort
-          audioPlayer.cancelAllPlayback();
-          isAiSpeakingRef.current = false;
-          setAgentStatus('listening');
-          setStatusDetail('Interrupted. Listening...');
-          break;
-
-        case 'transcript_update':
-          setTranscript((prev) => {
-            // Check if this entry already exists to update it
-            const idx = prev.findIndex((e) => e.id === msg.entry.id);
-            if (idx >= 0) {
-              const updated = [...prev];
-              updated[idx] = msg.entry;
-              return updated;
-            }
-            return [...prev, msg.entry];
-          });
-          if (msg.entry.role === 'assistant') {
-            setCurrentAssistantText('');
-          }
-          break;
-
-        case 'error':
-          setError(msg.message);
-          setAgentStatus('idle');
-          break;
-      }
-    },
-    [audioPlayer]
-  );
-
-  /**
-   * Connect WebSocket to local backend with multi-endpoint fallback and auto-reconnect
-   */
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // If running via Vite (e.g. port 5173), route via Vite's proxy (/ws) or direct to 127.0.0.1:3001
-    const wsUrl =
-      window.location.port === '5173'
-        ? `${wsProtocol}//${window.location.host}/ws`
-        : `${wsProtocol}//127.0.0.1:3001/ws`;
-
-    console.log(`[VoiceAgent] Connecting WebSocket to ${wsUrl}...`);
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch (e) {
-      console.error('[VoiceAgent] Failed to instantiate WebSocket:', e);
-      scheduleReconnect();
-      return;
-    }
-
-    ws.onopen = () => {
-      console.log('[VoiceAgent] WebSocket connected successfully.');
-      setIsConnected(true);
-      setError(null);
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleServerMessage(msg);
-      } catch (err) {
-        console.error('[VoiceAgent] Failed to parse server message:', err);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('[VoiceAgent] WebSocket closed. Retrying in 2s...');
-      setIsConnected(false);
-      setAgentStatus('disconnected');
-      scheduleReconnect();
-    };
-
-    ws.onerror = (err) => {
-      console.warn('[VoiceAgent] WebSocket connection error (waiting for server to start):', err);
-      setError('Cannot connect to local Voice Agent server (Port 3001). Retrying...');
-      setIsConnected(false);
-      try {
-        ws.close();
-      } catch {}
-    };
-
-    wsRef.current = ws;
-  }, [handleServerMessage]);
-
-  const scheduleReconnect = useCallback(() => {
-    if (!reconnectTimerRef.current) {
-      reconnectTimerRef.current = setTimeout(() => {
-        reconnectTimerRef.current = null;
-        connectWebSocket();
-      }, 2000);
-    }
-  }, [connectWebSocket]);
-
-  /**
-   * Starts a voice call session: opens mic, activates VAD, connects STT
+   * Starts a voice call session
    */
   const startCall = async () => {
     try {
@@ -346,7 +334,6 @@ export function useVoiceAgent() {
           triggerBargeIn('vad_barge_in');
         },
         onAudioChunk: (_pcm, base64) => {
-          // Stream raw audio chunks over WebSocket
           sendMessage({
             type: 'audio_chunk',
             data: base64,
@@ -368,9 +355,7 @@ export function useVoiceAgent() {
         try {
           recognition.start();
           recognitionRef.current = recognition;
-        } catch {
-          // Ignore if already started
-        }
+        } catch {}
       }
 
       setIsCalling(true);
@@ -394,13 +379,11 @@ export function useVoiceAgent() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch {
-        // ignore
-      }
+      } catch {}
       recognitionRef.current = null;
     }
 
-    audioPlayer.cancelAllPlayback();
+    audioPlayerRef.current.cancelAllPlayback();
     setIsCalling(false);
     setVolumeLevel(0);
     setAgentStatus('idle');
@@ -428,7 +411,7 @@ export function useVoiceAgent() {
     setCurrentAssistantText('');
   };
 
-  // Connect on mount
+  // Mount effect: connects ONCE on initial mount
   useEffect(() => {
     connectWebSocket();
     return () => {
@@ -437,17 +420,19 @@ export function useVoiceAgent() {
         reconnectTimerRef.current = null;
       }
       if (wsRef.current) {
-        wsRef.current.close();
+        const s = wsRef.current;
+        wsRef.current = null;
+        s.close();
       }
       if (vadRef.current) {
         vadRef.current.stop();
+        vadRef.current = null;
       }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
-        } catch {
-          // ignore
-        }
+        } catch {}
+        recognitionRef.current = null;
       }
     };
   }, [connectWebSocket]);
