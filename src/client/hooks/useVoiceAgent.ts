@@ -32,6 +32,7 @@ export function useVoiceAgent() {
   const recognitionRef = useRef<any>(null);
   const currentTurnIdRef = useRef<string | null>(null);
   const isAiSpeakingRef = useRef<boolean>(false);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Send message helper
   const sendMessage = useCallback((msg: ClientMessage) => {
@@ -248,19 +249,43 @@ export function useVoiceAgent() {
   );
 
   /**
-   * Connect WebSocket to local backend
+   * Connect WebSocket to local backend with multi-endpoint fallback and auto-reconnect
    */
   const connectWebSocket = useCallback(() => {
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.hostname}:3001/ws`;
+    // If running via Vite (e.g. port 5173), route via Vite's proxy (/ws) or direct to 127.0.0.1:3001
+    const wsUrl =
+      window.location.port === '5173'
+        ? `${wsProtocol}//${window.location.host}/ws`
+        : `${wsProtocol}//127.0.0.1:3001/ws`;
 
     console.log(`[VoiceAgent] Connecting WebSocket to ${wsUrl}...`);
-    const ws = new WebSocket(wsUrl);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (e) {
+      console.error('[VoiceAgent] Failed to instantiate WebSocket:', e);
+      scheduleReconnect();
+      return;
+    }
 
     ws.onopen = () => {
-      console.log('[VoiceAgent] WebSocket connected.');
+      console.log('[VoiceAgent] WebSocket connected successfully.');
       setIsConnected(true);
       setError(null);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
 
     ws.onmessage = (event) => {
@@ -273,19 +298,32 @@ export function useVoiceAgent() {
     };
 
     ws.onclose = () => {
-      console.log('[VoiceAgent] WebSocket closed.');
+      console.log('[VoiceAgent] WebSocket closed. Retrying in 2s...');
       setIsConnected(false);
       setAgentStatus('disconnected');
+      scheduleReconnect();
     };
 
     ws.onerror = (err) => {
-      console.error('[VoiceAgent] WebSocket connection error:', err);
-      setError('Cannot connect to local Voice Agent server (Port 3001).');
+      console.warn('[VoiceAgent] WebSocket connection error (waiting for server to start):', err);
+      setError('Cannot connect to local Voice Agent server (Port 3001). Retrying...');
       setIsConnected(false);
+      try {
+        ws.close();
+      } catch {}
     };
 
     wsRef.current = ws;
   }, [handleServerMessage]);
+
+  const scheduleReconnect = useCallback(() => {
+    if (!reconnectTimerRef.current) {
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        connectWebSocket();
+      }, 2000);
+    }
+  }, [connectWebSocket]);
 
   /**
    * Starts a voice call session: opens mic, activates VAD, connects STT
@@ -394,6 +432,10 @@ export function useVoiceAgent() {
   useEffect(() => {
     connectWebSocket();
     return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
       }

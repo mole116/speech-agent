@@ -360,10 +360,10 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-server.listen(CONFIG.port, () => {
+server.listen(CONFIG.port, '0.0.0.0', () => {
   console.log(`=======================================================`);
-  console.log(`🎙️  Local Voice Agent Server running on http://localhost:${CONFIG.port}`);
-  console.log(`📡 WebSocket Channel listening at ws://localhost:${CONFIG.port}/ws`);
+  console.log(`🎙️  Local Voice Agent Server running on http://localhost:${CONFIG.port} and http://127.0.0.1:${CONFIG.port}`);
+  console.log(`📡 WebSocket Channel listening at ws://127.0.0.1:${CONFIG.port}/ws`);
   console.log(`🧠 LLM Backend: Ollama (${CONFIG.ollama.baseUrl}) -> ${CONFIG.ollama.model}`);
   console.log(`⚡ VAD Sensitivity: RMS threshold = ${CONFIG.vad.energyThreshold}`);
   console.log(`🔊 Streaming TTS Engine: ${CONFIG.tts.engine}`);

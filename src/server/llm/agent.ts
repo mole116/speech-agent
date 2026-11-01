@@ -1,5 +1,6 @@
 import { streamText, CoreMessage } from 'ai';
 import { createOllama } from 'ollama-ai-provider';
+import { createOpenAI } from '@ai-sdk/openai';
 import { CONFIG } from '../config.js';
 import { createAgentTools } from './tools.js';
 import { SentenceSegmenter } from '../tts/sentenceSegmenter.js';
@@ -15,6 +16,7 @@ export interface AgentCallbacks {
 
 export class VoiceAgentOrchestrator {
   private ollama;
+  private openaiOllama;
   private conversationHistory: CoreMessage[] = [];
   private currentAbortController: AbortController | null = null;
   private isProcessing = false;
@@ -22,6 +24,12 @@ export class VoiceAgentOrchestrator {
   constructor() {
     this.ollama = createOllama({
       baseURL: `${CONFIG.ollama.baseUrl}/api`,
+    });
+
+    // OpenAI-compatible endpoint fallback for Ollama
+    this.openaiOllama = createOpenAI({
+      baseURL: `${CONFIG.ollama.baseUrl}/v1`,
+      apiKey: 'ollama',
     });
 
     // Seed system prompt
@@ -35,7 +43,6 @@ export class VoiceAgentOrchestrator {
    * Processes a user speech transcript through the Vercel AI SDK streamText pipeline
    */
   public async streamResponse(userText: string, callbacks: AgentCallbacks): Promise<void> {
-    // If already processing, cancel previous turn first
     if (this.currentAbortController) {
       this.abortCurrentTurn('superceded_by_new_speech');
     }
@@ -44,7 +51,6 @@ export class VoiceAgentOrchestrator {
     this.currentAbortController = abortController;
     this.isProcessing = true;
 
-    // Append user message to history
     this.conversationHistory.push({
       role: 'user',
       content: userText,
@@ -54,10 +60,9 @@ export class VoiceAgentOrchestrator {
     let accumulatedText = '';
     let interrupted = false;
 
-    // Setup server-side tools with event tracking
-    const tools = createAgentTools((event) => {
+    // Instantiate tool set
+    const toolHandlers = createAgentTools((event) => {
       if (abortController.signal.aborted) return;
-
       if (event.status === 'start') {
         callbacks.onToolCallStart?.(event.toolCallId, event.toolName, event.args || {});
       } else {
@@ -71,20 +76,22 @@ export class VoiceAgentOrchestrator {
     });
 
     try {
-      const model = this.ollama(CONFIG.ollama.model);
+      // Use OpenAI-compatible model endpoint for maximum Ollama streaming compatibility
+      const model = this.openaiOllama(CONFIG.ollama.model);
 
       console.log(`[Agent] Calling Ollama model: ${CONFIG.ollama.model}`);
 
       const result = streamText({
         model,
         messages: this.conversationHistory,
-        tools,
-        maxSteps: 5, // Allow tool-calling loops
+        tools: toolHandlers,
+        maxSteps: 5,
         temperature: CONFIG.ollama.temperature,
         abortSignal: abortController.signal,
       });
 
-      // Stream chunks using the fullStream event source
+      let detectedToolCall: { name: string; arguments: Record<string, unknown> } | null = null;
+
       for await (const part of result.fullStream) {
         if (abortController.signal.aborted) {
           interrupted = true;
@@ -92,21 +99,94 @@ export class VoiceAgentOrchestrator {
         }
 
         if (part.type === 'text-delta') {
-          const delta = part.textDelta;
+          accumulatedText += part.textDelta;
+
+          // Check if Ollama emitted a JSON tool call block in text
+          const trimmed = accumulatedText.trim();
+          if (trimmed.startsWith('{') && trimmed.includes('"name"') && (trimmed.includes('"arguments"') || trimmed.endsWith('}'))) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.name && typeof parsed.name === 'string') {
+                detectedToolCall = parsed;
+              }
+            } catch {
+              // Incomplete JSON chunk, keep accumulating
+            }
+          }
+
+          if (!detectedToolCall) {
+            callbacks.onTextDelta?.(part.textDelta, accumulatedText);
+            const sentences = segmenter.push(part.textDelta);
+            for (const sentence of sentences) {
+              callbacks.onSentence?.(sentence, segmenter.getIndex(), false);
+            }
+          }
+        } else if (part.type === 'tool-call') {
+          console.log(`[Agent] Native tool call: ${part.toolName}`, part.args);
+        } else if (part.type === 'tool-result') {
+          console.log(`[Agent] Native tool executed: ${part.toolName}`);
+        } else if (part.type === 'error') {
+          console.error('[Agent] Stream part error:', part.error);
+        }
+      }
+
+      // If Ollama returned a tool call JSON string, execute it mid-call and summarize
+      if (detectedToolCall && !abortController.signal.aborted) {
+        const { name, arguments: args } = detectedToolCall;
+        const toolCallId = `call_${Date.now()}_${name}`;
+        console.log(`[Agent] Executing tool '${name}' with args:`, args);
+
+        callbacks.onToolCallStart?.(toolCallId, name, args || {});
+        const startTime = Date.now();
+
+        let toolResult: unknown = null;
+        const toolDef = (toolHandlers as Record<string, any>)[name];
+        if (toolDef && typeof toolDef.execute === 'function') {
+          try {
+            toolResult = await toolDef.execute(args || {});
+          } catch (execErr) {
+            toolResult = { error: (execErr as Error).message };
+          }
+        } else {
+          toolResult = { error: `Tool ${name} not found` };
+        }
+
+        const durationMs = Date.now() - startTime;
+        callbacks.onToolCallComplete?.(toolCallId, name, toolResult, durationMs);
+
+        // Feed tool output back to Ollama to generate final spoken voice answer
+        console.log(`[Agent] Tool '${name}' completed in ${durationMs}ms. Generating voice summary...`);
+        accumulatedText = '';
+        segmenter.reset();
+
+        const followUpMessages: CoreMessage[] = [
+          ...this.conversationHistory,
+          { role: 'assistant', content: JSON.stringify(detectedToolCall) },
+          {
+            role: 'user',
+            content: `Tool '${name}' returned: ${JSON.stringify(toolResult)}. Summarize this in 1-2 concise spoken sentences for the voice user.`,
+          },
+        ];
+
+        const secondPass = streamText({
+          model,
+          messages: followUpMessages,
+          temperature: CONFIG.ollama.temperature,
+          abortSignal: abortController.signal,
+        });
+
+        for await (const delta of secondPass.textStream) {
+          if (abortController.signal.aborted) {
+            interrupted = true;
+            break;
+          }
           accumulatedText += delta;
           callbacks.onTextDelta?.(delta, accumulatedText);
 
-          // Stream sentence boundaries for TTS
           const sentences = segmenter.push(delta);
-          for (const sentence of sentences) {
-            callbacks.onSentence?.(sentence, segmenter.getIndex(), false);
+          for (const s of sentences) {
+            callbacks.onSentence?.(s, segmenter.getIndex(), false);
           }
-        } else if (part.type === 'tool-call') {
-          console.log(`[Agent] Tool requested: ${part.toolName}`, part.args);
-        } else if (part.type === 'tool-result') {
-          console.log(`[Agent] Tool executed: ${part.toolName}`);
-        } else if (part.type === 'error') {
-          console.error('[Agent] Stream part error:', part.error);
         }
       }
 
@@ -117,7 +197,6 @@ export class VoiceAgentOrchestrator {
           callbacks.onSentence?.(remaining, segmenter.getIndex(), true);
         }
 
-        // Save assistant output to conversation history
         if (accumulatedText.trim()) {
           this.conversationHistory.push({
             role: 'assistant',
@@ -133,7 +212,6 @@ export class VoiceAgentOrchestrator {
       if (isAbort || abortController.signal.aborted) {
         interrupted = true;
         console.log('[Agent] Generation aborted mid-stream (Barge-in / Interrupt).');
-        // Record partial response marked as interrupted
         if (accumulatedText.trim()) {
           this.conversationHistory.push({
             role: 'assistant',
@@ -153,9 +231,6 @@ export class VoiceAgentOrchestrator {
     }
   }
 
-  /**
-   * Violent kill switch / Barge-in trigger: Aborts active LLM stream immediately.
-   */
   public abortCurrentTurn(reason = 'barge_in'): boolean {
     if (this.currentAbortController && !this.currentAbortController.signal.aborted) {
       console.log(`[Agent] ABORTING active stream: reason=${reason}`);
