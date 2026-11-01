@@ -283,12 +283,6 @@ export function useVoiceAgent() {
 
       if (interim) {
         setStatusDetail(`Hearing: "${interim}"...`);
-        sendMessage({
-          type: 'user_transcript',
-          text: interim,
-          isFinal: false,
-          timestamp: Date.now(),
-        });
       }
 
       if (finalTranscript.trim()) {

@@ -99,27 +99,28 @@ wss.on('connection', (ws: WebSocket) => {
 
   /**
    * Universal Barge-in / Interruption Handler
-   * Stops active LLM generation, halts TTS subprocesses, and notifies client to purge audio buffers immediately.
+   * Stops active speech playback and halts generation ONLY when AI is speaking.
    */
   const executeBargeIn = (reason: string) => {
-    const isAiActive = session.status === 'speaking' || session.status === 'thinking' || session.status === 'tool_executing' || session.agent.isBusy();
-
-    if (isAiActive) {
-      console.log(`[Barge-in] Triggered: ${reason}. Forcibly halting AI stream.`);
-      session.agent.abortCurrentTurn(reason);
-      session.tts.abort();
-      session.vad.reset();
-
-      updateStatus('interrupted', reason);
-
-      sendJson(ws, {
-        type: 'interrupt_confirmed',
-        turnId: session.currentTurnId || undefined,
-        timestamp: Date.now(),
-      });
-
-      session.status = 'listening';
+    // Only interrupt if the AI is actively outputting speech!
+    if (session.status !== 'speaking') {
+      return;
     }
+
+    console.log(`[Barge-in] Triggered: ${reason}. Forcibly halting active AI speech.`);
+    session.agent.abortCurrentTurn(reason);
+    session.tts.abort();
+    session.vad.reset();
+
+    updateStatus('interrupted', reason);
+
+    sendJson(ws, {
+      type: 'interrupt_confirmed',
+      turnId: session.currentTurnId || undefined,
+      timestamp: Date.now(),
+    });
+
+    session.status = 'listening';
   };
 
   /**
@@ -129,8 +130,10 @@ wss.on('connection', (ws: WebSocket) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // Barge-in check: if AI was speaking, kill it first
-    executeBargeIn('new_user_utterance');
+    // If AI was actively speaking previous audio, cancel it
+    if (session.status === 'speaking') {
+      executeBargeIn('new_user_utterance');
+    }
 
     const turnId = `turn_${Date.now()}`;
     session.currentTurnId = turnId;
@@ -269,19 +272,11 @@ wss.on('connection', (ws: WebSocket) => {
     try {
       // 1. Raw Binary Audio Chunk (e.g. PCM 16-bit 16kHz from AudioWorklet)
       if (isBinary && Buffer.isBuffer(data)) {
-        const isAiSpeaking = session.status === 'speaking' || session.status === 'thinking' || session.agent.isBusy();
+        const isAiSpeaking = session.status === 'speaking';
         const vadEvent = session.vad.processAudioChunk(data, isAiSpeaking);
 
-        if (vadEvent) {
-          if (vadEvent.type === 'barge_in') {
-            executeBargeIn('server_vad_audio_threshold');
-          } else if (vadEvent.type === 'speech_start') {
-            if (isAiSpeaking) {
-              executeBargeIn('server_vad_speech_start');
-            } else {
-              updateStatus('listening');
-            }
-          }
+        if (vadEvent && isAiSpeaking && vadEvent.type === 'barge_in') {
+          executeBargeIn('server_vad_audio_threshold');
         }
         return;
       }
@@ -292,42 +287,35 @@ wss.on('connection', (ws: WebSocket) => {
 
       switch (message.type) {
         case 'user_interrupt':
-          // Violent client-side VAD barge-in signal
+          // Explicit barge-in command (from UI button or user voice)
           executeBargeIn(`client_vad_${message.reason}`);
           break;
 
         case 'user_speech_start':
-          // Client VAD onset detected
-          if (session.status === 'speaking' || session.status === 'thinking' || session.agent.isBusy()) {
+          // Only barge-in if the AI is actively outputting speech!
+          if (session.status === 'speaking') {
             executeBargeIn('client_vad_speech_onset');
-          } else {
+          } else if (session.status === 'idle') {
             updateStatus('listening');
           }
           break;
 
         case 'user_speech_end':
-          // Client VAD silence detected
           break;
 
         case 'user_transcript':
-          if (message.isFinal) {
+          if (message.isFinal && message.text?.trim()) {
             await handleUserUtterance(message.text, message.id);
-          } else {
-            // Interim speech feedback
-            if (session.status === 'speaking' || session.status === 'thinking') {
-              executeBargeIn('client_interim_transcript');
-            }
           }
           break;
 
         case 'audio_chunk':
-          // Base64-encoded PCM audio chunk over JSON
           if (message.data) {
             const pcmBuffer = Buffer.from(message.data, 'base64');
-            const isAiSpeaking = session.status === 'speaking' || session.status === 'thinking' || session.agent.isBusy();
+            const isAiSpeaking = session.status === 'speaking';
             const vadEvent = session.vad.processAudioChunk(pcmBuffer, isAiSpeaking);
 
-            if (vadEvent?.type === 'barge_in') {
+            if (vadEvent?.type === 'barge_in' && session.status === 'speaking') {
               executeBargeIn('server_vad_base64_barge_in');
             }
           }
