@@ -8,6 +8,7 @@ import {
 } from '../../types/protocol.js';
 import { ClientVAD } from '../vad/clientVad.js';
 import { useAudioQueuePlayer } from './useAudioQueuePlayer.js';
+import { isSelfEcho } from '../vad/echoFilter.js';
 
 interface IWindow extends Window {
   webkitSpeechRecognition?: any;
@@ -37,14 +38,33 @@ export function useVoiceAgent() {
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const pendingMessagesRef = useRef<ClientMessage[]>([]);
   const turnTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const recentAssistantUtterancesRef = useRef<string[]>([]);
 
   // Audio queue player
   const audioPlayer = useAudioQueuePlayer({
     onPlaybackStateChange: (isPlaying) => {
       isAiSpeakingRef.current = isPlaying;
-      if (!isPlaying) {
+      if (isPlaying) {
+        // Active speaker bleed guard: abort pending recognition buffer so mic doesn't capture speaker output
+        try {
+          if (recognitionRef.current) {
+            recognitionRef.current.abort();
+          }
+        } catch {}
+      } else {
         aiSpeechEndTimeRef.current = Date.now();
         setAgentStatus((prev) => (prev === 'speaking' ? 'idle' : prev));
+
+        // Restart recognition cleanly after speaker audio has cleared
+        if (isCallingRef.current && recognitionRef.current) {
+          setTimeout(() => {
+            if (isCallingRef.current && !isAiSpeakingRef.current) {
+              try {
+                recognitionRef.current.start();
+              } catch {}
+            }
+          }, 350);
+        }
       }
       if (vadRef.current) {
         vadRef.current.setAiSpeaking(isPlaying);
@@ -124,6 +144,10 @@ export function useVoiceAgent() {
 
       case 'tts_sentence':
         audioPlayerRef.current.enqueueSentence(msg.text, msg.turnId, msg.sentenceIndex);
+        recentAssistantUtterancesRef.current.push(msg.text);
+        if (recentAssistantUtterancesRef.current.length > 10) {
+          recentAssistantUtterancesRef.current.shift();
+        }
         break;
 
       case 'audio_chunk':
@@ -176,6 +200,12 @@ export function useVoiceAgent() {
         });
         if (msg.entry.role === 'assistant') {
           setCurrentAssistantText('');
+          if (msg.entry.text) {
+            recentAssistantUtterancesRef.current.push(msg.entry.text);
+            if (recentAssistantUtterancesRef.current.length > 10) {
+              recentAssistantUtterancesRef.current.shift();
+            }
+          }
         }
         break;
 
@@ -333,9 +363,9 @@ export function useVoiceAgent() {
         }
       }
 
-      // Echo guard: ignore microphone input while AI is outputting speech or within 600ms cooldown
+      // Echo guard 1: ignore microphone input while AI is outputting speech or within 1200ms cooldown
       const now = Date.now();
-      if (isAiSpeakingRef.current || now < aiSpeechEndTimeRef.current + 600) {
+      if (isAiSpeakingRef.current || now < aiSpeechEndTimeRef.current + 1200) {
         return;
       }
 
@@ -345,6 +375,13 @@ export function useVoiceAgent() {
 
       if (finalTranscript.trim()) {
         const text = finalTranscript.trim();
+
+        // Echo guard 2: Semantic anti-echo cancellation filter
+        if (isSelfEcho(text, recentAssistantUtterancesRef.current)) {
+          console.warn('[STT] 🛡️ Ignored acoustic echo bleed from speaker output:', text);
+          return;
+        }
+
         const userMsgId = `user_${Date.now()}`;
         console.log('[STT] Final Recognized Speech:', text);
         setAgentStatus('thinking');

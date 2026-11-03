@@ -32,4 +32,19 @@ describe('SentenceSegmenter (Streaming TTS Tokenizer)', () => {
     segmenter.push('First sentence! Second sentence? Third sentence. ');
     assert.strictEqual(segmenter.getIndex(), 3);
   });
+
+  it('should segment conversational clauses on commas to stream TTS early', () => {
+    const segmenter = new SentenceSegmenter();
+    const clauses = segmenter.push(
+      'Your MacBook Pro M4 is running macOS version 27.2.0, with 48 GB of memory, and CPU at 2.4 GHz. '
+    );
+    assert.ok(clauses.length >= 2, `Should segment into multiple phrases for early TTS (got ${clauses.length})`);
+    assert.strictEqual(clauses[0], 'Your MacBook Pro M4 is running macOS version 27.2.0,');
+  });
+
+  it('should not break decimal numbers across segments', () => {
+    const segmenter = new SentenceSegmenter();
+    const res = segmenter.push('CPU is running at 2.4 GHz with 99.7% memory. ');
+    assert.deepStrictEqual(res, ['CPU is running at 2.4 GHz with 99.7% memory.']);
+  });
 });
