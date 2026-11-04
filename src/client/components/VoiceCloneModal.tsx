@@ -28,6 +28,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const [recordedAudioUri, setRecordedAudioUri] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AcousticVoiceAnalysis | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isPreviewSynthesizing, setIsPreviewSynthesizing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [volumeLevel, setVolumeLevel] = useState<number>(0);
 
@@ -217,6 +218,34 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     }
   };
 
+  const handleNeuralPreview = async () => {
+    setIsPreviewSynthesizing(true);
+    setStatusMessage('Generating real neural cloned voice with F5-TTS...');
+    try {
+      const res = await fetch('/api/voice-clone/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'Hello Moshe! This is your voice agent speaking back in your actual cloned voice.',
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.audioBase64) {
+        setStatusMessage('Playing your neural cloned voice!');
+        const audio = new Audio(`data:audio/wav;base64,${data.audioBase64}`);
+        audio.play();
+      } else {
+        setStatusMessage('Falling back to local preview');
+        previewVoice('Hello! This is your voice agent speaking back in your vocal style.');
+      }
+    } catch {
+      setStatusMessage('Playing local preview');
+      previewVoice('Hello! This is your voice agent speaking back in your vocal style.');
+    } finally {
+      setIsPreviewSynthesizing(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -351,13 +380,20 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
             {/* Test Sample Button */}
             <button
               type="button"
-              onClick={() =>
-                previewVoice("Hey Moshe! This is your cloned voice agent speaking back in your vocal tone.")
-              }
-              className="w-full py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-700/60"
+              onClick={handleNeuralPreview}
+              disabled={isPreviewSynthesizing}
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all border shadow-sm ${
+                isPreviewSynthesizing
+                  ? 'bg-indigo-950/80 border-indigo-700/60 text-indigo-300 animate-pulse'
+                  : 'bg-gradient-to-r from-indigo-950/90 to-purple-950/90 hover:from-indigo-900 hover:to-purple-900 border-indigo-500/60 text-indigo-200'
+              }`}
             >
-              <span>▶️</span>
-              <span>Preview Agent Speaking In Your Voice</span>
+              <span>{isPreviewSynthesizing ? '⏳' : '▶️'}</span>
+              <span>
+                {isPreviewSynthesizing
+                  ? 'Generating Neural Clone on M4 Metal...'
+                  : 'Preview Real Cloned Voice (Neural F5-TTS)'}
+              </span>
             </button>
           </div>
         )}

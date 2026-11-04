@@ -42,6 +42,8 @@ export function useVoiceAgent() {
       pitch: 1.0,
     };
   });
+  const voiceSettingsRef = useRef(voiceSettings);
+  voiceSettingsRef.current = voiceSettings;
 
   const wsRef = useRef<WebSocket | null>(null);
   const vadRef = useRef<ClientVAD | null>(null);
@@ -118,6 +120,7 @@ export function useVoiceAgent() {
         sendMessage({
           type: 'set_config',
           config: {
+            ttsEngine: updated.isClonedVoice ? 'clone' : 'browser',
             ttsVoice: updated.clonedProfile?.baseVoiceName || updated.voiceName,
             voiceProfile: updated.clonedProfile,
           },
@@ -267,7 +270,9 @@ export function useVoiceAgent() {
         break;
 
       case 'tts_sentence':
-        audioPlayerRef.current.enqueueSentence(msg.text, msg.turnId, msg.sentenceIndex);
+        if (!voiceSettingsRef.current.isClonedVoice) {
+          audioPlayerRef.current.enqueueSentence(msg.text, msg.turnId, msg.sentenceIndex);
+        }
         recentAssistantUtterancesRef.current.push(msg.text);
         if (recentAssistantUtterancesRef.current.length > 10) {
           recentAssistantUtterancesRef.current.shift();

@@ -59,7 +59,7 @@ app.get('/api/voice-clone/profile', (_req, res) => {
   return res.json({ enrolled: false, profile: null });
 });
 
-app.post('/api/voice-clone/enroll', (req, res) => {
+app.post('/api/voice-clone/enroll', async (req, res) => {
   try {
     const { profile, audioBase64 } = req.body;
     if (!profile) {
@@ -69,8 +69,25 @@ app.post('/api/voice-clone/enroll', (req, res) => {
     fs.writeFileSync(PROFILE_FILE, JSON.stringify(profile, null, 2), 'utf-8');
 
     if (audioBase64) {
-      const base64Clean = audioBase64.replace(/^data:audio\/\w+;base64,/, '');
-      fs.writeFileSync(AUDIO_SAMPLE_FILE, Buffer.from(base64Clean, 'base64'));
+      const base64Clean = audioBase64.includes(';base64,')
+        ? audioBase64.split(';base64,')[1]
+        : audioBase64;
+      const rawBuffer = Buffer.from(base64Clean, 'base64');
+      const webmPath = path.join(STORAGE_DIR, 'user_voice.webm');
+      fs.writeFileSync(webmPath, rawBuffer);
+
+      // Convert to 24kHz mono WAV using local ffmpeg if available
+      const ffmpegExe = path.resolve(process.cwd(), '.venv-voice/bin/ffmpeg');
+      if (fs.existsSync(ffmpegExe)) {
+        try {
+          const { spawnSync } = await import('child_process');
+          spawnSync(ffmpegExe, ['-y', '-i', webmPath, '-ar', '24000', '-ac', '1', AUDIO_SAMPLE_FILE]);
+        } catch {
+          fs.writeFileSync(AUDIO_SAMPLE_FILE, rawBuffer);
+        }
+      } else {
+        fs.writeFileSync(AUDIO_SAMPLE_FILE, rawBuffer);
+      }
     }
 
     logDebug(
@@ -81,6 +98,26 @@ app.post('/api/voice-clone/enroll', (req, res) => {
   } catch (err: any) {
     logDebug('VoiceClone', 'Error enrolling voice:', err);
     return res.status(500).json({ error: err.message || 'Failed to save voice profile' });
+  }
+});
+
+app.post('/api/voice-clone/preview', async (req, res) => {
+  try {
+    const text = req.body?.text || 'Hello Moshe! This is your voice agent speaking back in your actual cloned voice.';
+    const refWav = AUDIO_SAMPLE_FILE;
+    if (!fs.existsSync(refWav)) {
+      return res.status(400).json({ error: 'No voice sample enrolled yet. Please record a voice sample first.' });
+    }
+
+    const { NeuralTTSBridge } = await import('./tts/neuralTtsBridge.js');
+    const chunk = await NeuralTTSBridge.getInstance().synthesize(text, 0, refWav);
+    if (!chunk || !chunk.dataBase64) {
+      return res.status(500).json({ error: 'Neural synthesis failed' });
+    }
+    return res.json({ success: true, audioBase64: chunk.dataBase64, format: 'wav' });
+  } catch (err: any) {
+    logDebug('VoiceClone', 'Preview error:', err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -242,8 +279,8 @@ wss.on('connection', (ws: WebSocket) => {
           isFinal,
         });
 
-        // If server-side TTS audio chunks are enabled (e.g. macOS 'say'), synthesize and stream raw audio chunk
-        if (CONFIG.tts.engine === 'say') {
+        // If server-side TTS audio chunks are enabled (e.g. macOS 'say' or F5-TTS 'clone'), synthesize and stream raw audio chunk
+        if (CONFIG.tts.engine === 'say' || CONFIG.tts.engine === 'clone') {
           const chunk = await session.tts.synthesize(sentence, sentenceIndex);
           if (chunk && session.currentTurnId === turnId) {
             sendJson(ws, {
@@ -397,6 +434,7 @@ wss.on('connection', (ws: WebSocket) => {
           }
           if (message.config.ttsEngine) {
             CONFIG.tts.engine = message.config.ttsEngine;
+            logDebug('Config', `TTS engine changed to: ${CONFIG.tts.engine}`);
           }
           if (message.config.ttsVoice) {
             CONFIG.tts.voice = message.config.ttsVoice;
@@ -404,6 +442,7 @@ wss.on('connection', (ws: WebSocket) => {
           }
           if (message.config.voiceProfile) {
             logDebug('Config', `Active voice profile updated: ${message.config.voiceProfile.name}`);
+            CONFIG.tts.engine = 'clone';
             if (message.config.voiceProfile.baseVoiceName) {
               CONFIG.tts.voice = message.config.voiceProfile.baseVoiceName;
             }
