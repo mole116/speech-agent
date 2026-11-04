@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceCloneProfile } from '../../types/protocol.js';
 import { analyzeAudioBuffer, AcousticVoiceAnalysis } from '../vad/pitchEstimator.js';
 
@@ -37,16 +37,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  // Clean up on unmount or close
-  useEffect(() => {
-    return () => {
-      stopRecordingCleanup();
-    };
-  }, []);
-
-  if (!isOpen) return null;
-
-  const stopRecordingCleanup = () => {
+  const stopRecordingCleanup = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -59,7 +50,14 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
-  };
+  }, []);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      stopRecordingCleanup();
+    };
+  }, [stopRecordingCleanup]);
 
   const startRecording = async () => {
     try {
@@ -218,6 +216,8 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       }
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200">

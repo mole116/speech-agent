@@ -249,15 +249,17 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
       </div>
 
       {/* Voice Clone Enrollment Modal */}
-      <VoiceCloneModal
-        isOpen={isCloneModalOpen}
-        onClose={() => setIsCloneModalOpen(false)}
-        availableVoices={availableVoices}
-        activeProfile={voiceSettings.clonedProfile || null}
-        onSaveProfile={saveClonedProfile || (async () => {})}
-        onDeleteProfile={deleteClonedProfile}
-        previewVoice={previewVoice}
-      />
+      {isCloneModalOpen && (
+        <VoiceCloneModal
+          isOpen={isCloneModalOpen}
+          onClose={() => setIsCloneModalOpen(false)}
+          availableVoices={availableVoices}
+          activeProfile={voiceSettings.clonedProfile || null}
+          onSaveProfile={saveClonedProfile || (async () => {})}
+          onDeleteProfile={deleteClonedProfile}
+          previewVoice={previewVoice}
+        />
+      )}
     </>
   );
 };
