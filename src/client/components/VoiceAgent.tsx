@@ -21,6 +21,8 @@ export const VoiceAgent: React.FC = () => {
     voiceSettings,
     setVoiceSettings,
     availableVoices,
+    saveClonedProfile,
+    deleteClonedProfile,
     previewVoice,
     startCall,
     endCall,
@@ -75,6 +77,8 @@ export const VoiceAgent: React.FC = () => {
             setVoiceSettings={setVoiceSettings}
             availableVoices={availableVoices}
             previewVoice={previewVoice}
+            saveClonedProfile={saveClonedProfile}
+            deleteClonedProfile={deleteClonedProfile}
           />
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800">
             <span

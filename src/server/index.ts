@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import http from 'http';
 import express from 'express';
 import cors from 'cors';
@@ -11,6 +13,7 @@ import {
   ServerMessage,
   AgentStatus,
   ToolCallLog,
+  VoiceCloneProfile,
 } from '../types/protocol.js';
 
 function logDebug(tag: string, ...args: unknown[]) {
@@ -19,7 +22,11 @@ function logDebug(tag: string, ...args: unknown[]) {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '15mb' }));
+
+const STORAGE_DIR = path.resolve(process.cwd(), 'storage/voice_profiles');
+const PROFILE_FILE = path.join(STORAGE_DIR, 'profile.json');
+const AUDIO_SAMPLE_FILE = path.join(STORAGE_DIR, 'user_voice.wav');
 
 // Basic health & telemetry check endpoint
 app.get('/api/health', async (_req, res) => {
@@ -37,6 +44,55 @@ app.get('/api/health', async (_req, res) => {
     },
     ttsEngine: CONFIG.tts.engine,
   });
+});
+
+// Voice Cloning REST Endpoints
+app.get('/api/voice-clone/profile', (_req, res) => {
+  try {
+    if (fs.existsSync(PROFILE_FILE)) {
+      const data: VoiceCloneProfile = JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf-8'));
+      return res.json({ enrolled: true, profile: data });
+    }
+  } catch (err) {
+    logDebug('VoiceClone', 'Failed reading profile file:', err);
+  }
+  return res.json({ enrolled: false, profile: null });
+});
+
+app.post('/api/voice-clone/enroll', (req, res) => {
+  try {
+    const { profile, audioBase64 } = req.body;
+    if (!profile) {
+      return res.status(400).json({ error: 'Missing profile data' });
+    }
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+    fs.writeFileSync(PROFILE_FILE, JSON.stringify(profile, null, 2), 'utf-8');
+
+    if (audioBase64) {
+      const base64Clean = audioBase64.replace(/^data:audio\/\w+;base64,/, '');
+      fs.writeFileSync(AUDIO_SAMPLE_FILE, Buffer.from(base64Clean, 'base64'));
+    }
+
+    logDebug(
+      'VoiceClone',
+      `Profile enrolled: ${profile.name} (pitch=${profile.pitch}, rate=${profile.rate}, base=${profile.baseVoiceName})`
+    );
+    return res.json({ success: true, profile });
+  } catch (err: any) {
+    logDebug('VoiceClone', 'Error enrolling voice:', err);
+    return res.status(500).json({ error: err.message || 'Failed to save voice profile' });
+  }
+});
+
+app.delete('/api/voice-clone/profile', (_req, res) => {
+  try {
+    if (fs.existsSync(PROFILE_FILE)) fs.unlinkSync(PROFILE_FILE);
+    if (fs.existsSync(AUDIO_SAMPLE_FILE)) fs.unlinkSync(AUDIO_SAMPLE_FILE);
+    logDebug('VoiceClone', 'Profile deleted');
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 const server = http.createServer(app);
@@ -345,6 +401,12 @@ wss.on('connection', (ws: WebSocket) => {
           if (message.config.ttsVoice) {
             CONFIG.tts.voice = message.config.ttsVoice;
             logDebug('Config', `TTS voice changed to: ${CONFIG.tts.voice}`);
+          }
+          if (message.config.voiceProfile) {
+            logDebug('Config', `Active voice profile updated: ${message.config.voiceProfile.name}`);
+            if (message.config.voiceProfile.baseVoiceName) {
+              CONFIG.tts.voice = message.config.voiceProfile.baseVoiceName;
+            }
           }
           break;
 

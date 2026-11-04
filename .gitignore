@@ -3,3 +3,5 @@ dist
 .env
 .DS_Store
 *.log
+storage/voice_profiles/*.wav
+storage/voice_profiles/*.webm

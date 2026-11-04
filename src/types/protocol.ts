@@ -68,11 +68,26 @@ export interface ClientTranscriptMessage {
   timestamp: number;
 }
 
+export interface VoiceCloneProfile {
+  id: string;
+  name: string;
+  createdAt: number;
+  sampleAudioDurationSec: number;
+  detectedPitchHz: number;
+  pitch: number;
+  rate: number;
+  baseVoiceName: string;
+  audioDataUri?: string;
+  classification?: 'low' | 'medium' | 'high';
+}
+
 export interface VoiceSettings {
   voiceName: string;
   rate: number;
   pitch: number;
   lang?: string;
+  isClonedVoice?: boolean;
+  clonedProfile?: VoiceCloneProfile;
 }
 
 export interface ClientSetConfigMessage {
@@ -81,8 +96,9 @@ export interface ClientSetConfigMessage {
     model?: string;
     systemPrompt?: string;
     temperature?: number;
-    ttsEngine?: 'browser' | 'say';
+    ttsEngine?: 'browser' | 'say' | 'clone';
     ttsVoice?: string;
+    voiceProfile?: VoiceCloneProfile;
   };
 }
 

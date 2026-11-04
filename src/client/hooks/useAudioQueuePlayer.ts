@@ -152,8 +152,11 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
 
       const utterance = new SpeechSynthesisUtterance(item.text);
       const currentSettings = voiceSettingsRef.current;
-      utterance.rate = currentSettings.rate || 1.05;
-      utterance.pitch = currentSettings.pitch || 1.0;
+      const isCloned = currentSettings.isClonedVoice && currentSettings.clonedProfile;
+      const profile = currentSettings.clonedProfile;
+
+      utterance.rate = isCloned && profile ? profile.rate : currentSettings.rate || 1.05;
+      utterance.pitch = isCloned && profile ? profile.pitch : currentSettings.pitch || 1.0;
 
       // Keep strong reference in global array to prevent GC killing speech mid-sentence
       const globalUtterances = window.__voiceUtterances || [];
@@ -163,12 +166,17 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
       const voices = window.speechSynthesis.getVoices();
       let chosenVoice: SpeechSynthesisVoice | undefined;
 
-      // 1. Explicit user selected voice name
-      if (currentSettings.voiceName) {
+      // 1. Cloned voice base profile matching
+      if (isCloned && profile?.baseVoiceName) {
+        chosenVoice = voices.find((v) => v.name === profile.baseVoiceName);
+      }
+
+      // 2. Explicit user selected voice name
+      if (!chosenVoice && currentSettings.voiceName) {
         chosenVoice = voices.find((v) => v.name === currentSettings.voiceName);
       }
 
-      // 2. Natural English voice fallback
+      // 3. Natural English voice fallback
       if (!chosenVoice) {
         chosenVoice = voices.find(
           (v) =>
@@ -302,13 +310,19 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
 
     const utterance = new SpeechSynthesisUtterance(sampleText);
     const currentSettings = voiceSettingsRef.current;
-    utterance.rate = currentSettings.rate || 1.05;
-    utterance.pitch = currentSettings.pitch || 1.0;
+    const isCloned = currentSettings.isClonedVoice && currentSettings.clonedProfile;
+    const profile = currentSettings.clonedProfile;
+
+    utterance.rate = isCloned && profile ? profile.rate : currentSettings.rate || 1.05;
+    utterance.pitch = isCloned && profile ? profile.pitch : currentSettings.pitch || 1.0;
 
     const voices = window.speechSynthesis.getVoices();
     let chosenVoice: SpeechSynthesisVoice | undefined;
 
-    if (currentSettings.voiceName) {
+    if (isCloned && profile?.baseVoiceName) {
+      chosenVoice = voices.find((v) => v.name === profile.baseVoiceName);
+    }
+    if (!chosenVoice && currentSettings.voiceName) {
       chosenVoice = voices.find((v) => v.name === currentSettings.voiceName);
     }
     if (!chosenVoice) {

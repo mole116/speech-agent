@@ -6,6 +6,7 @@ import {
   ServerMessage,
   ClientMessage,
   VoiceSettings,
+  VoiceCloneProfile,
 } from '../../types/protocol.js';
 import { ClientVAD } from '../vad/clientVad.js';
 import { useAudioQueuePlayer } from './useAudioQueuePlayer.js';
@@ -114,17 +115,81 @@ export function useVoiceAgent() {
         } catch {}
         audioPlayerRef.current.setVoiceSettings(updated);
 
-        if (updated.voiceName) {
-          sendMessage({
-            type: 'set_config',
-            config: { ttsVoice: updated.voiceName },
-          });
-        }
+        sendMessage({
+          type: 'set_config',
+          config: {
+            ttsVoice: updated.clonedProfile?.baseVoiceName || updated.voiceName,
+            voiceProfile: updated.clonedProfile,
+          },
+        });
         return updated;
       });
     },
     [sendMessage]
   );
+
+  const saveClonedProfile = useCallback(
+    async (profile: VoiceCloneProfile, audioBase64?: string) => {
+      try {
+        await fetch('/api/voice-clone/enroll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile, audioBase64 }),
+        });
+      } catch (err) {
+        console.warn('[VoiceAgent] Failed syncing cloned profile to server:', err);
+      }
+
+      setVoiceSettings({
+        isClonedVoice: true,
+        clonedProfile: profile,
+        voiceName: profile.baseVoiceName,
+        pitch: profile.pitch,
+        rate: profile.rate,
+      });
+    },
+    [setVoiceSettings]
+  );
+
+  const deleteClonedProfile = useCallback(async () => {
+    try {
+      await fetch('/api/voice-clone/profile', { method: 'DELETE' });
+    } catch (err) {
+      console.warn('[VoiceAgent] Failed deleting profile on server:', err);
+    }
+
+    setVoiceSettings({
+      isClonedVoice: false,
+      clonedProfile: undefined,
+      voiceName: '',
+      pitch: 1.0,
+      rate: 1.05,
+    });
+  }, [setVoiceSettings]);
+
+  // Load server-persisted voice clone profile if available
+  useEffect(() => {
+    fetch('/api/voice-clone/profile')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.enrolled && data.profile) {
+          setVoiceSettingsState((prev) => {
+            if (!prev.clonedProfile) {
+              const updated = {
+                ...prev,
+                clonedProfile: data.profile,
+              };
+              try {
+                localStorage.setItem('voice_settings', JSON.stringify(updated));
+              } catch {}
+              return updated;
+            }
+            return prev;
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Discover and track available system speech synthesis voices
   useEffect(() => {
@@ -688,6 +753,8 @@ export function useVoiceAgent() {
     voiceSettings,
     setVoiceSettings,
     availableVoices,
+    saveClonedProfile,
+    deleteClonedProfile,
     previewVoice: audioPlayer.previewVoice,
     startCall,
     endCall,

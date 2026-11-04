@@ -15,7 +15,7 @@ export const CONFIG = {
     frameSize: 512,
   },
   tts: {
-    engine: (process.env.TTS_ENGINE || 'browser') as 'browser' | 'say',
+    engine: (process.env.TTS_ENGINE || 'browser') as 'browser' | 'say' | 'clone',
     voice: process.env.TTS_VOICE || 'Samantha', // for macOS 'say'
   },
   systemPrompt: `You are a real-time conversational voice assistant running entirely locally on a MacBook Pro M4 powered by qwen2.5-coder:32b.
