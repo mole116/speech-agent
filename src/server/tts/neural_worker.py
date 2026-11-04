@@ -6,6 +6,10 @@ import time
 import io
 import random
 
+# Protocol IPC channel: save true stdout for JSON protocol lines, redirect sys.stdout to stderr
+protocol_stdout = sys.stdout
+sys.stdout = sys.stderr
+
 # Monkeypatch torchaudio.load to use soundfile (avoids torchcodec and dynamic dylib dependencies)
 import soundfile as sf
 import torch
@@ -49,7 +53,7 @@ def handle_infer(req):
     ref_file = req.get("ref_file")
     ref_text = req.get("ref_text", "The quick brown fox jumps over the lazy dog near the calm blue river.")
     gen_text = req.get("text", "")
-    nfe_step = req.get("nfe_step", 16)
+    nfe_step = req.get("nfe_step", 8)
     speed = req.get("speed", 1.0)
 
     if not ref_file or not os.path.exists(ref_file):
@@ -90,8 +94,8 @@ def main():
     # Preload model immediately
     get_model()
     log("Neural Worker ready for commands on stdin.")
-    sys.stdout.write(json.dumps({"status": "ready"}) + "\n")
-    sys.stdout.flush()
+    protocol_stdout.write(json.dumps({"status": "ready"}) + "\n")
+    protocol_stdout.flush()
 
     for line in sys.stdin:
         line = line.strip()
@@ -114,8 +118,8 @@ def main():
             log(f"Error handling request: {e}")
             resp = {"status": "error", "error": str(e), "id": req.get("id") if "req" in locals() else None}
 
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+        protocol_stdout.write(json.dumps(resp) + "\n")
+        protocol_stdout.flush()
 
 if __name__ == "__main__":
     main()

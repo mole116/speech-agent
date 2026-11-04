@@ -400,6 +400,19 @@ export function useVoiceAgent() {
         ws.send(JSON.stringify(queued));
       }
 
+      // Sync active voice configuration with server immediately upon connection
+      const activeSettings = voiceSettingsRef.current;
+      ws.send(
+        JSON.stringify({
+          type: 'set_config',
+          config: {
+            ttsEngine: activeSettings.isClonedVoice ? 'clone' : 'browser',
+            ttsVoice: activeSettings.clonedProfile?.baseVoiceName || activeSettings.voiceName,
+            voiceProfile: activeSettings.clonedProfile,
+          },
+        })
+      );
+
       // Heartbeat ping every 10s to keep connection alive
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
@@ -582,6 +595,19 @@ export function useVoiceAgent() {
       isCallingRef.current = true;
       setIsCalling(true);
 
+      // Resume Web Audio context on user gesture
+      audioPlayerRef.current.resumeContext();
+
+      // Ensure server has latest voice config for this call
+      sendMessage({
+        type: 'set_config',
+        config: {
+          ttsEngine: voiceSettingsRef.current.isClonedVoice ? 'clone' : 'browser',
+          ttsVoice: voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName,
+          voiceProfile: voiceSettingsRef.current.clonedProfile,
+        },
+      });
+
       // 1. Initialize Client VAD with acoustic echo suppression
       const vad = new ClientVAD({
         energyThreshold: 0.030,
@@ -665,6 +691,19 @@ export function useVoiceAgent() {
   const sendTextQuery = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+
+    // Resume Web Audio context on user gesture
+    audioPlayerRef.current.resumeContext();
+
+    // Ensure server has latest voice config
+    sendMessage({
+      type: 'set_config',
+      config: {
+        ttsEngine: voiceSettingsRef.current.isClonedVoice ? 'clone' : 'browser',
+        ttsVoice: voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName,
+        voiceProfile: voiceSettingsRef.current.clonedProfile,
+      },
+    });
 
     if (isAiSpeakingRef.current) {
       triggerBargeIn('manual');

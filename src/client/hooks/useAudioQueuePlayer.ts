@@ -126,6 +126,9 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     // Mode A: Raw AudioBuffer playback
     if (item.audioBuffer) {
       const ctx = getAudioContext();
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const source = ctx.createBufferSource();
       source.buffer = item.audioBuffer;
       source.connect(ctx.destination);
@@ -262,6 +265,20 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
   );
 
   /**
+   * Resumes Web Audio context (to be called on user gestures)
+   */
+  const resumeContext = useCallback(async () => {
+    try {
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+    } catch (e) {
+      console.warn('[AudioPlayer] Error resuming AudioContext:', e);
+    }
+  }, [getAudioContext]);
+
+  /**
    * Enqueues a raw audio buffer
    */
   const enqueueAudioChunk = useCallback(
@@ -273,6 +290,9 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
 
       try {
         const ctx = getAudioContext();
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
         const binaryStr = atob(base64Data);
         const len = binaryStr.length;
         const bytes = new Uint8Array(len);
@@ -351,5 +371,6 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     enqueueSentence,
     enqueueAudioChunk,
     cancelAllPlayback,
+    resumeContext,
   };
 }

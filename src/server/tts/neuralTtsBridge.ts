@@ -138,7 +138,7 @@ export class NeuralTTSBridge {
       text,
       ref_file: refFile,
       ref_text: 'The quick brown fox jumps over the lazy dog near the calm blue river.',
-      nfe_step: 16,
+      nfe_step: 8,
       speed: 1.0,
     };
 

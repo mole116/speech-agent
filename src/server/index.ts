@@ -28,6 +28,20 @@ const STORAGE_DIR = path.resolve(process.cwd(), 'storage/voice_profiles');
 const PROFILE_FILE = path.join(STORAGE_DIR, 'profile.json');
 const AUDIO_SAMPLE_FILE = path.join(STORAGE_DIR, 'user_voice.wav');
 
+// Auto-detect existing voice clone profile on server start
+if (fs.existsSync(AUDIO_SAMPLE_FILE) && fs.existsSync(PROFILE_FILE)) {
+  CONFIG.tts.engine = 'clone';
+  try {
+    const prof = JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf-8'));
+    if (prof.baseVoiceName) {
+      CONFIG.tts.voice = prof.baseVoiceName;
+    }
+    logDebug('VoiceClone', `Enrolled voice profile detected: "${prof.name}". Initialized TTS engine to 'clone'.`);
+  } catch (err) {
+    logDebug('VoiceClone', 'Could not read existing profile file on boot:', err);
+  }
+}
+
 // Basic health & telemetry check endpoint
 app.get('/api/health', async (_req, res) => {
   res.json({
@@ -90,9 +104,14 @@ app.post('/api/voice-clone/enroll', async (req, res) => {
       }
     }
 
+    CONFIG.tts.engine = 'clone';
+    if (profile.baseVoiceName) {
+      CONFIG.tts.voice = profile.baseVoiceName;
+    }
+
     logDebug(
       'VoiceClone',
-      `Profile enrolled: ${profile.name} (pitch=${profile.pitch}, rate=${profile.rate}, base=${profile.baseVoiceName})`
+      `Profile enrolled: ${profile.name} (pitch=${profile.pitch}, rate=${profile.rate}, base=${profile.baseVoiceName}). TTS engine set to 'clone'.`
     );
     return res.json({ success: true, profile });
   } catch (err: any) {
@@ -252,6 +271,8 @@ wss.on('connection', (ws: WebSocket) => {
 
     updateStatus('thinking');
 
+    const pendingTtsPromises: Promise<void>[] = [];
+
     // Run Vercel AI SDK pipeline
     logDebug('LLM', `Calling streamResponse for turn ${turnId}...`);
     await session.agent.streamResponse(trimmed, {
@@ -281,16 +302,22 @@ wss.on('connection', (ws: WebSocket) => {
 
         // If server-side TTS audio chunks are enabled (e.g. macOS 'say' or F5-TTS 'clone'), synthesize and stream raw audio chunk
         if (CONFIG.tts.engine === 'say' || CONFIG.tts.engine === 'clone') {
-          const chunk = await session.tts.synthesize(sentence, sentenceIndex);
-          if (chunk && session.currentTurnId === turnId) {
-            sendJson(ws, {
-              type: 'audio_chunk',
-              turnId,
-              sentenceIndex,
-              format: 'wav',
-              data: chunk.dataBase64,
-            });
+          if (CONFIG.tts.engine === 'clone') {
+            updateStatus('speaking', 'Cloning voice in neural engine...');
           }
+          const synthPromise = (async () => {
+            const chunk = await session.tts.synthesize(sentence, sentenceIndex);
+            if (chunk && session.currentTurnId === turnId) {
+              sendJson(ws, {
+                type: 'audio_chunk',
+                turnId,
+                sentenceIndex,
+                format: 'wav',
+                data: chunk.dataBase64,
+              });
+            }
+          })();
+          pendingTtsPromises.push(synthPromise);
         }
       },
 
@@ -336,10 +363,11 @@ wss.on('connection', (ws: WebSocket) => {
         });
       },
 
-      onFinish: (fullText, interrupted) => {
+      onFinish: async (fullText, interrupted) => {
         if (session.currentTurnId !== turnId) return;
         logDebug('Finish', `Assistant [${turnId}]: length=${fullText.length}, interrupted=${interrupted}`);
 
+        // Broadcast final assistant transcript entry immediately
         sendJson(ws, {
           type: 'transcript_update',
           turnId,
@@ -352,6 +380,17 @@ wss.on('connection', (ws: WebSocket) => {
             toolCalls: Array.from(session.activeToolCalls.values()),
           },
         });
+
+        // Await all in-flight sentence TTS synthesis tasks for this turn before setting status to idle
+        if (pendingTtsPromises.length > 0) {
+          try {
+            await Promise.all(pendingTtsPromises);
+          } catch (e) {
+            logDebug('Finish', 'TTS synthesis error during completion:', e);
+          }
+        }
+
+        if (session.currentTurnId !== turnId) return;
 
         updateStatus('idle');
       },

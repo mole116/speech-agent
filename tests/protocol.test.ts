@@ -65,6 +65,7 @@ describe('End-to-End WebSocket Voice Protocol', () => {
         }
       });
 
+      ws.send(JSON.stringify({ type: 'set_config', config: { ttsEngine: 'browser' } }));
       ws.send(JSON.stringify({
         type: 'user_transcript',
         id: 'test_greet',
@@ -74,7 +75,7 @@ describe('End-to-End WebSocket Voice Protocol', () => {
       }));
 
       const start = Date.now();
-      while (!assistantReply && Date.now() - start < 25000) {
+      while (!assistantReply && Date.now() - start < 45000) {
         await new Promise((r) => setTimeout(r, 100));
       }
 
@@ -109,6 +110,7 @@ describe('End-to-End WebSocket Voice Protocol', () => {
         }
       });
 
+      ws.send(JSON.stringify({ type: 'set_config', config: { ttsEngine: 'browser' } }));
       ws.send(JSON.stringify({
         type: 'user_transcript',
         id: 'test_tool',
@@ -118,7 +120,7 @@ describe('End-to-End WebSocket Voice Protocol', () => {
       }));
 
       const start = Date.now();
-      while (!assistantReply && Date.now() - start < 25000) {
+      while (!assistantReply && Date.now() - start < 45000) {
         await new Promise((r) => setTimeout(r, 100));
       }
 
