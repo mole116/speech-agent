@@ -59,6 +59,7 @@ export class VoiceAgentOrchestrator {
       role: 'user',
       content: userText,
     });
+    this.trimHistory();
 
     const segmenter = new SentenceSegmenter();
     let accumulatedText = '';
@@ -111,8 +112,7 @@ export class VoiceAgentOrchestrator {
           const looksLikeToolJson =
             trimmed.startsWith('{') ||
             trimmed.startsWith('```json') ||
-            trimmed.startsWith('```') ||
-            trimmed.includes('"name":');
+            trimmed.startsWith('```');
 
           if (looksLikeToolJson) {
             // Try parsing JSON block directly or extracting from code fences
@@ -219,6 +219,7 @@ export class VoiceAgentOrchestrator {
             role: 'assistant',
             content: accumulatedText,
           });
+          this.trimHistory();
         }
       }
     } catch (err: unknown) {
@@ -261,6 +262,23 @@ export class VoiceAgentOrchestrator {
 
   public isBusy(): boolean {
     return this.isProcessing;
+  }
+
+  public setModel(modelName: string): void {
+    CONFIG.ollama.model = modelName;
+  }
+
+  public getModel(): string {
+    return CONFIG.ollama.model;
+  }
+
+  private trimHistory(): void {
+    // Keep system prompt (index 0) + last 8 conversational turns to maintain low TTFT
+    if (this.conversationHistory.length > 9) {
+      const systemPrompt = this.conversationHistory[0];
+      const recent = this.conversationHistory.slice(-8);
+      this.conversationHistory = [systemPrompt, ...recent];
+    }
   }
 
   public getHistory(): CoreMessage[] {

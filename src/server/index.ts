@@ -42,6 +42,28 @@ if (fs.existsSync(AUDIO_SAMPLE_FILE) && fs.existsSync(PROFILE_FILE)) {
   }
 }
 
+async function warmupOllamaModel(modelName: string): Promise<void> {
+  try {
+    logDebug('Ollama', `Warming up model "${modelName}" with keep_alive: -1...`);
+    const res = await fetch(`${CONFIG.ollama.baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: modelName,
+        keep_alive: -1,
+      }),
+    });
+    if (res.ok) {
+      logDebug('Ollama', `Model "${modelName}" successfully locked in memory.`);
+    }
+  } catch (err) {
+    logDebug('Ollama', `Failed warming up model "${modelName}":`, err);
+  }
+}
+
+// Pre-warm the active model in the background immediately on startup
+warmupOllamaModel(CONFIG.ollama.model);
+
 // Basic health & telemetry check endpoint
 app.get('/api/health', async (_req, res) => {
   res.json({
@@ -58,6 +80,23 @@ app.get('/api/health', async (_req, res) => {
     },
     ttsEngine: CONFIG.tts.engine,
   });
+});
+
+// List locally installed Ollama models
+app.get('/api/models', async (_req, res) => {
+  try {
+    const response = await fetch(`${CONFIG.ollama.baseUrl}/api/tags`);
+    if (!response.ok) throw new Error(`Ollama returned status ${response.status}`);
+    const data: any = await response.json();
+    const models = (data.models || []).map((m: any) => ({
+      name: m.name,
+      size: m.size,
+      details: m.details,
+    }));
+    return res.json({ models, activeModel: CONFIG.ollama.model });
+  } catch (err: any) {
+    return res.json({ models: [{ name: CONFIG.ollama.model }], activeModel: CONFIG.ollama.model });
+  }
 });
 
 // Voice Cloning REST Endpoints
@@ -160,6 +199,8 @@ interface ClientSession {
   agent: VoiceAgentOrchestrator;
   vad: ServerVAD;
   tts: LocalStreamingTTS;
+  ttsEngine: 'browser' | 'say' | 'clone';
+  ttsVoice: string;
   status: AgentStatus;
   currentTurnId: string | null;
   activeToolCalls: Map<string, ToolCallLog>;
@@ -187,6 +228,8 @@ wss.on('connection', (ws: WebSocket) => {
     agent: new VoiceAgentOrchestrator(),
     vad: new ServerVAD(),
     tts: new LocalStreamingTTS(),
+    ttsEngine: CONFIG.tts.engine,
+    ttsVoice: CONFIG.tts.voice,
     status: 'idle',
     currentTurnId: null,
     activeToolCalls: new Map(),
@@ -301,13 +344,13 @@ wss.on('connection', (ws: WebSocket) => {
         });
 
         // If server-side TTS audio chunks are enabled (e.g. macOS 'say' or F5-TTS 'clone'), synthesize and stream raw audio chunk
-        if (CONFIG.tts.engine === 'say' || CONFIG.tts.engine === 'clone') {
-          if (CONFIG.tts.engine === 'clone') {
+        if (session.ttsEngine === 'say' || session.ttsEngine === 'clone') {
+          if (session.ttsEngine === 'clone') {
             updateStatus('speaking', 'Cloning voice in neural engine...');
           }
           const synthPromise = (async () => {
             const chunk = await session.tts.synthesize(sentence, sentenceIndex);
-            if (chunk && session.currentTurnId === turnId) {
+            if (chunk && session.currentTurnId === turnId && session.ttsEngine === 'clone') {
               sendJson(ws, {
                 type: 'audio_chunk',
                 turnId,
@@ -469,20 +512,26 @@ wss.on('connection', (ws: WebSocket) => {
         case 'set_config':
           if (message.config.model) {
             CONFIG.ollama.model = message.config.model;
+            session.agent.setModel(message.config.model);
+            warmupOllamaModel(message.config.model);
             logDebug('Config', `Model changed to: ${CONFIG.ollama.model}`);
           }
           if (message.config.ttsEngine) {
+            session.ttsEngine = message.config.ttsEngine;
             CONFIG.tts.engine = message.config.ttsEngine;
-            logDebug('Config', `TTS engine changed to: ${CONFIG.tts.engine}`);
+            logDebug('Config', `TTS engine changed to: ${session.ttsEngine}`);
           }
           if (message.config.ttsVoice) {
+            session.ttsVoice = message.config.ttsVoice;
             CONFIG.tts.voice = message.config.ttsVoice;
-            logDebug('Config', `TTS voice changed to: ${CONFIG.tts.voice}`);
+            logDebug('Config', `TTS voice changed to: ${session.ttsVoice}`);
           }
-          if (message.config.voiceProfile) {
+          if (message.config.voiceProfile && message.config.ttsEngine === 'clone') {
             logDebug('Config', `Active voice profile updated: ${message.config.voiceProfile.name}`);
+            session.ttsEngine = 'clone';
             CONFIG.tts.engine = 'clone';
             if (message.config.voiceProfile.baseVoiceName) {
+              session.ttsVoice = message.config.voiceProfile.baseVoiceName;
               CONFIG.tts.voice = message.config.voiceProfile.baseVoiceName;
             }
           }

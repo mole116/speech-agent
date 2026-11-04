@@ -12,6 +12,8 @@ export const VoiceAgent: React.FC = () => {
     agentStatus,
     statusDetail,
     modelName,
+    availableModels,
+    selectModel,
     transcript,
     currentAssistantText,
     toolLogs,
@@ -70,8 +72,25 @@ export const VoiceAgent: React.FC = () => {
           </div>
         </div>
 
-        {/* Voice Selector & Server Status Pill */}
+        {/* Model Selector & Voice Selector & Server Status Pill */}
         <div className="flex items-center gap-3 text-xs">
+          {availableModels.length > 0 && (
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs">
+              <span className="text-slate-400 font-medium">🤖 Model:</span>
+              <select
+                value={modelName}
+                onChange={(e) => selectModel(e.target.value)}
+                className="bg-transparent text-sky-400 font-mono font-medium focus:outline-none cursor-pointer max-w-[170px] truncate"
+                title="Select Ollama Model"
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m} className="bg-slate-900 text-slate-200">
+                    {m} {m.includes('ministral') ? '⚡ Fast' : m.includes('32b') ? '🧠 32B' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <VoiceSelector
             voiceSettings={voiceSettings}
             setVoiceSettings={setVoiceSettings}

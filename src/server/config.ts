@@ -5,7 +5,7 @@ export const CONFIG = {
   port: parseInt(process.env.PORT || '3001', 10),
   ollama: {
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
-    model: process.env.OLLAMA_MODEL || 'qwen2.5-coder:32b',
+    model: process.env.OLLAMA_MODEL || 'ministral-3:8b',
     temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || '0.7'),
   },
   vad: {

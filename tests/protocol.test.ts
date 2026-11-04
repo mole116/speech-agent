@@ -36,7 +36,7 @@ describe('End-to-End WebSocket Voice Protocol', () => {
 
     assert.strictEqual(handshake.type, 'session_info');
     assert.strictEqual(typeof handshake.sessionId, 'string');
-    assert.strictEqual(handshake.model, 'qwen2.5-coder:32b');
+    assert.ok(typeof handshake.model === 'string' && handshake.model.length > 0);
     assert.ok(Array.isArray(handshake.supportedTools));
     assert.ok(handshake.supportedTools.includes('getSystemMetrics'));
 

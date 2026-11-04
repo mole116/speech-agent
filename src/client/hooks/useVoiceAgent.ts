@@ -21,7 +21,8 @@ export function useVoiceAgent() {
   const [isConnected, setIsConnected] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>('disconnected');
   const [statusDetail, setStatusDetail] = useState<string>('');
-  const [modelName, setModelName] = useState<string>('qwen2.5-coder:32b');
+  const [modelName, setModelName] = useState<string>('ministral-3:8b');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [currentAssistantText, setCurrentAssistantText] = useState<string>('');
   const [toolLogs, setToolLogs] = useState<ToolCallLog[]>([]);
@@ -121,8 +122,10 @@ export function useVoiceAgent() {
           type: 'set_config',
           config: {
             ttsEngine: updated.isClonedVoice ? 'clone' : 'browser',
-            ttsVoice: updated.clonedProfile?.baseVoiceName || updated.voiceName,
-            voiceProfile: updated.clonedProfile,
+            ttsVoice: updated.isClonedVoice
+              ? (updated.clonedProfile?.baseVoiceName || updated.voiceName)
+              : updated.voiceName,
+            voiceProfile: updated.isClonedVoice ? updated.clonedProfile : undefined,
           },
         });
         return updated;
@@ -192,7 +195,34 @@ export function useVoiceAgent() {
         }
       })
       .catch(() => {});
+
+    // Fetch locally installed Ollama models
+    fetch('/api/models')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.models && Array.isArray(data.models)) {
+          const names: string[] = data.models.map((m: any) => m.name);
+          setAvailableModels(names);
+          if (data.activeModel) {
+            setModelName(data.activeModel);
+          }
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const selectModel = useCallback(
+    (newModel: string) => {
+      setModelName(newModel);
+      sendMessage({
+        type: 'set_config',
+        config: {
+          model: newModel,
+        },
+      });
+    },
+    [sendMessage]
+  );
 
   // Discover and track available system speech synthesis voices
   useEffect(() => {
@@ -280,7 +310,10 @@ export function useVoiceAgent() {
         break;
 
       case 'audio_chunk':
-        audioPlayerRef.current.enqueueAudioChunk(msg.data, msg.turnId, msg.sentenceIndex);
+        // Only enqueue neural audio chunk if user is currently using their cloned voice
+        if (voiceSettingsRef.current.isClonedVoice) {
+          audioPlayerRef.current.enqueueAudioChunk(msg.data, msg.turnId, msg.sentenceIndex);
+        }
         break;
 
       case 'tool_call_start': {
@@ -407,8 +440,10 @@ export function useVoiceAgent() {
           type: 'set_config',
           config: {
             ttsEngine: activeSettings.isClonedVoice ? 'clone' : 'browser',
-            ttsVoice: activeSettings.clonedProfile?.baseVoiceName || activeSettings.voiceName,
-            voiceProfile: activeSettings.clonedProfile,
+            ttsVoice: activeSettings.isClonedVoice
+              ? (activeSettings.clonedProfile?.baseVoiceName || activeSettings.voiceName)
+              : activeSettings.voiceName,
+            voiceProfile: activeSettings.isClonedVoice ? activeSettings.clonedProfile : undefined,
           },
         })
       );
@@ -603,8 +638,10 @@ export function useVoiceAgent() {
         type: 'set_config',
         config: {
           ttsEngine: voiceSettingsRef.current.isClonedVoice ? 'clone' : 'browser',
-          ttsVoice: voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName,
-          voiceProfile: voiceSettingsRef.current.clonedProfile,
+          ttsVoice: voiceSettingsRef.current.isClonedVoice
+            ? (voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName)
+            : voiceSettingsRef.current.voiceName,
+          voiceProfile: voiceSettingsRef.current.isClonedVoice ? voiceSettingsRef.current.clonedProfile : undefined,
         },
       });
 
@@ -700,8 +737,10 @@ export function useVoiceAgent() {
       type: 'set_config',
       config: {
         ttsEngine: voiceSettingsRef.current.isClonedVoice ? 'clone' : 'browser',
-        ttsVoice: voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName,
-        voiceProfile: voiceSettingsRef.current.clonedProfile,
+        ttsVoice: voiceSettingsRef.current.isClonedVoice
+          ? (voiceSettingsRef.current.clonedProfile?.baseVoiceName || voiceSettingsRef.current.voiceName)
+          : voiceSettingsRef.current.voiceName,
+        voiceProfile: voiceSettingsRef.current.isClonedVoice ? voiceSettingsRef.current.clonedProfile : undefined,
       },
     });
 
@@ -788,6 +827,8 @@ export function useVoiceAgent() {
     agentStatus,
     statusDetail,
     modelName,
+    availableModels,
+    selectModel,
     transcript,
     currentAssistantText,
     toolLogs,
