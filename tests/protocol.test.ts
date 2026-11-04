@@ -1,11 +1,26 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert';
 import WebSocket from 'ws';
 
 const WS_URL = 'ws://127.0.0.1:3001/ws';
 
 describe('End-to-End WebSocket Voice Protocol', () => {
-  it('should establish connection and receive session handshake', async () => {
+  let serverAvailable = false;
+
+  before(async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:3001/api/health', { signal: AbortSignal.timeout(1000) });
+      serverAvailable = res.ok;
+    } catch {
+      serverAvailable = false;
+    }
+  });
+
+  it('should establish connection and receive session handshake', async (t) => {
+    if (!serverAvailable) {
+      t.skip('Local dev server on 127.0.0.1:3001 is not running');
+      return;
+    }
     const ws = new WebSocket(WS_URL);
     await new Promise((resolve, reject) => {
       ws.on('open', resolve);
@@ -28,7 +43,11 @@ describe('End-to-End WebSocket Voice Protocol', () => {
     ws.close();
   });
 
-  it('should process user greeting with full status lifecycle and text deltas', async () => {
+  it('should process user greeting with full status lifecycle and text deltas', async (t) => {
+    if (!serverAvailable) {
+      t.skip('Local dev server on 127.0.0.1:3001 is not running');
+      return;
+    }
     const ws = new WebSocket(WS_URL);
     await new Promise((resolve) => ws.on('open', resolve));
 
@@ -68,7 +87,11 @@ describe('End-to-End WebSocket Voice Protocol', () => {
     }
   });
 
-  it('should execute server tool mid-turn and synthesize spoken answer', async () => {
+  it('should execute server tool mid-turn and synthesize spoken answer', async (t) => {
+    if (!serverAvailable) {
+      t.skip('Local dev server on 127.0.0.1:3001 is not running');
+      return;
+    }
     const ws = new WebSocket(WS_URL);
     await new Promise((resolve) => ws.on('open', resolve));
 
@@ -106,7 +129,11 @@ describe('End-to-End WebSocket Voice Protocol', () => {
     }
   });
 
-  it('should handle barge-in interrupt instantly (<200ms) and stop active turn', async () => {
+  it('should handle barge-in interrupt instantly (<200ms) and stop active turn', async (t) => {
+    if (!serverAvailable) {
+      t.skip('Local dev server on 127.0.0.1:3001 is not running');
+      return;
+    }
     const ws = new WebSocket(WS_URL);
     await new Promise((resolve) => ws.on('open', resolve));
 

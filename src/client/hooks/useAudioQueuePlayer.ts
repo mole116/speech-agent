@@ -1,4 +1,5 @@
 import { useRef, useCallback, useState } from 'react';
+import { VoiceSettings } from '../../types/protocol.js';
 
 export interface QueueItem {
   id: string;
@@ -12,6 +13,7 @@ export interface UseAudioQueuePlayerOptions {
   onPlaybackStateChange?: (isPlaying: boolean) => void;
   onSentenceStart?: (item: QueueItem) => void;
   onSentenceEnd?: (item: QueueItem) => void;
+  voiceSettings?: VoiceSettings;
 }
 
 // Global reference retention to prevent Chromium V8 GC from killing active utterances mid-sentence
@@ -29,6 +31,26 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  const [voiceSettings, setVoiceSettingsState] = useState<VoiceSettings>(() => {
+    return (
+      options.voiceSettings || {
+        voiceName: '',
+        rate: 1.05,
+        pitch: 1.0,
+      }
+    );
+  });
+  const voiceSettingsRef = useRef(voiceSettings);
+  voiceSettingsRef.current = voiceSettings;
+
+  const setVoiceSettings = useCallback((newSettings: Partial<VoiceSettings>) => {
+    setVoiceSettingsState((prev) => {
+      const updated = { ...prev, ...newSettings };
+      voiceSettingsRef.current = updated;
+      return updated;
+    });
+  }, []);
 
   const queueRef = useRef<QueueItem[]>([]);
   const isPlayingRef = useRef(false);
@@ -129,8 +151,9 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
       }
 
       const utterance = new SpeechSynthesisUtterance(item.text);
-      utterance.rate = 1.05; // Snappy conversational rate
-      utterance.pitch = 1.0;
+      const currentSettings = voiceSettingsRef.current;
+      utterance.rate = currentSettings.rate || 1.05;
+      utterance.pitch = currentSettings.pitch || 1.0;
 
       // Keep strong reference in global array to prevent GC killing speech mid-sentence
       const globalUtterances = window.__voiceUtterances || [];
@@ -138,13 +161,27 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
       window.__voiceUtterances = globalUtterances;
 
       const voices = window.speechSynthesis.getVoices();
-      const naturalVoice = voices.find(
-        (v) =>
-          v.lang.startsWith('en') &&
-          (v.name.includes('Samantha') || v.name.includes('Daniel') || v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Alex'))
-      );
-      if (naturalVoice) {
-        utterance.voice = naturalVoice;
+      let chosenVoice: SpeechSynthesisVoice | undefined;
+
+      // 1. Explicit user selected voice name
+      if (currentSettings.voiceName) {
+        chosenVoice = voices.find((v) => v.name === currentSettings.voiceName);
+      }
+
+      // 2. Natural English voice fallback
+      if (!chosenVoice) {
+        chosenVoice = voices.find(
+          (v) =>
+            v.lang.startsWith('en') &&
+            (v.name.includes('Samantha') ||
+              v.name.includes('Daniel') ||
+              v.name.includes('Natural') ||
+              v.name.includes('Google') ||
+              v.name.includes('Alex'))
+        );
+      }
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
       }
 
       let isFinished = false;
@@ -253,8 +290,50 @@ export function useAudioQueuePlayer(options: UseAudioQueuePlayerOptions = {}) {
     [cancelAllPlayback, getAudioContext, playNext]
   );
 
+  /**
+   * Preview currently selected voice settings
+   */
+  const previewVoice = useCallback((sampleText = "Hello! This is how I sound on your Mac.") => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+    } catch {}
+
+    const utterance = new SpeechSynthesisUtterance(sampleText);
+    const currentSettings = voiceSettingsRef.current;
+    utterance.rate = currentSettings.rate || 1.05;
+    utterance.pitch = currentSettings.pitch || 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    let chosenVoice: SpeechSynthesisVoice | undefined;
+
+    if (currentSettings.voiceName) {
+      chosenVoice = voices.find((v) => v.name === currentSettings.voiceName);
+    }
+    if (!chosenVoice) {
+      chosenVoice = voices.find((v) => v.lang.startsWith('en'));
+    }
+    if (chosenVoice) {
+      utterance.voice = chosenVoice;
+    }
+
+    if (window.__voiceUtterances) {
+      window.__voiceUtterances.push(utterance);
+    }
+    utterance.onend = () => {
+      if (window.__voiceUtterances) {
+        window.__voiceUtterances = window.__voiceUtterances.filter((u) => u !== utterance);
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
   return {
     isPlaying,
+    voiceSettings,
+    setVoiceSettings,
+    previewVoice,
     enqueueSentence,
     enqueueAudioChunk,
     cancelAllPlayback,

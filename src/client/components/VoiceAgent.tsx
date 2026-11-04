@@ -3,6 +3,7 @@ import { useVoiceAgent } from '../hooks/useVoiceAgent.js';
 import { AudioVisualizer } from './AudioVisualizer.js';
 import { TranscriptView } from './TranscriptView.js';
 import { ToolExecLog } from './ToolExecLog.js';
+import { VoiceSelector } from './VoiceSelector.js';
 
 export const VoiceAgent: React.FC = () => {
   const {
@@ -17,6 +18,10 @@ export const VoiceAgent: React.FC = () => {
     volumeLevel,
     isAiSpeaking,
     error,
+    voiceSettings,
+    setVoiceSettings,
+    availableVoices,
+    previewVoice,
     startCall,
     endCall,
     triggerBargeIn,
@@ -63,8 +68,14 @@ export const VoiceAgent: React.FC = () => {
           </div>
         </div>
 
-        {/* Server Status Pill */}
+        {/* Voice Selector & Server Status Pill */}
         <div className="flex items-center gap-3 text-xs">
+          <VoiceSelector
+            voiceSettings={voiceSettings}
+            setVoiceSettings={setVoiceSettings}
+            availableVoices={availableVoices}
+            previewVoice={previewVoice}
+          />
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800">
             <span
               className={`w-2.5 h-2.5 rounded-full ${

@@ -342,6 +342,10 @@ wss.on('connection', (ws: WebSocket) => {
           if (message.config.ttsEngine) {
             CONFIG.tts.engine = message.config.ttsEngine;
           }
+          if (message.config.ttsVoice) {
+            CONFIG.tts.voice = message.config.ttsVoice;
+            logDebug('Config', `TTS voice changed to: ${CONFIG.tts.voice}`);
+          }
           break;
 
         case 'ping':

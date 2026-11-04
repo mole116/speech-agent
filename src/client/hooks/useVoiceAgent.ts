@@ -5,6 +5,7 @@ import {
   ToolCallLog,
   ServerMessage,
   ClientMessage,
+  VoiceSettings,
 } from '../../types/protocol.js';
 import { ClientVAD } from '../vad/clientVad.js';
 import { useAudioQueuePlayer } from './useAudioQueuePlayer.js';
@@ -26,6 +27,20 @@ export function useVoiceAgent() {
   const [volumeLevel, setVolumeLevel] = useState<number>(0);
   const [isCalling, setIsCalling] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Persistent voice configuration
+  const [voiceSettings, setVoiceSettingsState] = useState<VoiceSettings>(() => {
+    try {
+      const saved = localStorage.getItem('voice_settings');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      voiceName: '',
+      rate: 1.05,
+      pitch: 1.0,
+    };
+  });
 
   const wsRef = useRef<WebSocket | null>(null);
   const vadRef = useRef<ClientVAD | null>(null);
@@ -40,8 +55,9 @@ export function useVoiceAgent() {
   const turnTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const recentAssistantUtterancesRef = useRef<string[]>([]);
 
-  // Audio queue player
+  // Audio queue player with user-selected voice
   const audioPlayer = useAudioQueuePlayer({
+    voiceSettings,
     onPlaybackStateChange: (isPlaying) => {
       isAiSpeakingRef.current = isPlaying;
       if (isPlaying) {
@@ -87,6 +103,49 @@ export function useVoiceAgent() {
         connectWebSocketRef.current();
       }
     }
+  }, []);
+
+  const setVoiceSettings = useCallback(
+    (newSettings: Partial<VoiceSettings>) => {
+      setVoiceSettingsState((prev) => {
+        const updated = { ...prev, ...newSettings };
+        try {
+          localStorage.setItem('voice_settings', JSON.stringify(updated));
+        } catch {}
+        audioPlayerRef.current.setVoiceSettings(updated);
+
+        if (updated.voiceName) {
+          sendMessage({
+            type: 'set_config',
+            config: { ttsVoice: updated.voiceName },
+          });
+        }
+        return updated;
+      });
+    },
+    [sendMessage]
+  );
+
+  // Discover and track available system speech synthesis voices
+  useEffect(() => {
+    const loadVoices = () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          setAvailableVoices(voices);
+        }
+      }
+    };
+
+    loadVoices();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+    return () => {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
   }, []);
 
   /**
@@ -626,6 +685,10 @@ export function useVoiceAgent() {
     volumeLevel,
     isAiSpeaking: isAiSpeakingRef.current,
     error,
+    voiceSettings,
+    setVoiceSettings,
+    availableVoices,
+    previewVoice: audioPlayer.previewVoice,
     startCall,
     endCall,
     triggerBargeIn,

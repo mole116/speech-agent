@@ -68,6 +68,13 @@ export interface ClientTranscriptMessage {
   timestamp: number;
 }
 
+export interface VoiceSettings {
+  voiceName: string;
+  rate: number;
+  pitch: number;
+  lang?: string;
+}
+
 export interface ClientSetConfigMessage {
   type: 'set_config';
   config: {
@@ -75,6 +82,7 @@ export interface ClientSetConfigMessage {
     systemPrompt?: string;
     temperature?: number;
     ttsEngine?: 'browser' | 'say';
+    ttsVoice?: string;
   };
 }
 
