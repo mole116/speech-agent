@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { VoiceCloneProfile } from '../../types/protocol.js';
 import { analyzeAudioBuffer, AcousticVoiceAnalysis } from '../vad/pitchEstimator.js';
 
@@ -247,10 +248,14 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   };
 
   if (!isOpen) return null;
+  if (typeof document === 'undefined') return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto bg-black/75 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg max-h-[88vh] flex flex-col rounded-3xl bg-slate-900 border border-slate-700/80 shadow-2xl my-auto text-slate-100 overflow-hidden">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+      <div
+        className="relative w-full max-w-lg max-h-[88vh] flex flex-col rounded-3xl bg-slate-900 border border-slate-700/80 shadow-2xl my-auto text-slate-100 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header (Pinned) */}
         <div className="flex items-center justify-between border-b border-slate-800 p-5 pb-3.5 shrink-0 bg-slate-900/90 backdrop-blur-sm">
           <div className="flex items-center gap-3">
@@ -438,6 +443,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
