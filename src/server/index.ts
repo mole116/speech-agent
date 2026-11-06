@@ -148,6 +148,12 @@ app.post('/api/voice-clone/enroll', async (req, res) => {
       CONFIG.tts.voice = profile.baseVoiceName;
     }
 
+    // Immediately precompute Qwen3-TTS speaker embedding in background
+    const { NeuralTTSBridge } = await import('./tts/neuralTtsBridge.js');
+    NeuralTTSBridge.getInstance().setVoiceProfile(AUDIO_SAMPLE_FILE).catch((e) => {
+      logDebug('VoiceClone', 'Failed precomputing voice embedding:', e);
+    });
+
     logDebug(
       'VoiceClone',
       `Profile enrolled: ${profile.name} (pitch=${profile.pitch}, rate=${profile.rate}, base=${profile.baseVoiceName}). TTS engine set to 'clone'.`
@@ -343,13 +349,13 @@ wss.on('connection', (ws: WebSocket) => {
           isFinal,
         });
 
-        // If server-side TTS audio chunks are enabled (e.g. macOS 'say' or F5-TTS 'clone'), synthesize and stream raw audio chunk
+        // If server-side TTS audio chunks are enabled (e.g. macOS 'say' or Qwen3-TTS 'clone'), synthesize and stream raw audio chunk
         if (session.ttsEngine === 'say' || session.ttsEngine === 'clone') {
           if (session.ttsEngine === 'clone') {
-            updateStatus('speaking', 'Cloning voice in neural engine...');
+            updateStatus('speaking', 'Synthesizing voice with Qwen3-TTS...');
           }
           const synthPromise = (async () => {
-            const chunk = await session.tts.synthesize(sentence, sentenceIndex);
+            const chunk = await session.tts.synthesize(sentence, sentenceIndex, undefined, session.ttsEngine);
             if (chunk && session.currentTurnId === turnId && session.ttsEngine === 'clone') {
               sendJson(ws, {
                 type: 'audio_chunk',

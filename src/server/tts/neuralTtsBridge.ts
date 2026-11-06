@@ -40,7 +40,7 @@ export class NeuralTTSBridge {
 
     this.isStarting = true;
     const pythonExe = path.resolve(process.cwd(), '.venv-voice/bin/python');
-    const workerScript = path.resolve(process.cwd(), 'src/server/tts/neural_worker.py');
+    const workerScript = path.resolve(process.cwd(), 'src/server/tts/qwen3_worker.py');
 
     if (!fs.existsSync(pythonExe)) {
       console.warn('[NeuralTTS] .venv-voice/bin/python not found. Neural TTS unavailable.');
@@ -49,7 +49,7 @@ export class NeuralTTSBridge {
     }
 
     try {
-      console.log('[NeuralTTS] Starting Python Neural Worker...');
+      console.log('[NeuralTTS] Starting Qwen3-TTS Neural Worker...');
       const proc = spawn(pythonExe, [workerScript], {
         env: {
           ...process.env,
@@ -112,6 +112,28 @@ export class NeuralTTSBridge {
       this.isStarting = false;
       return false;
     }
+  }
+
+  /**
+   * Precompute speaker voice embedding immediately upon enrollment
+   */
+  public async setVoiceProfile(refFile: string): Promise<boolean> {
+    const ready = await this.ensureWorker();
+    if (!ready || !this.workerProc) return false;
+
+    const reqId = `set_voice_${++this.reqCounter}_${Date.now()}`;
+    return new Promise<boolean>((resolve) => {
+      this.pendingRequests.set(reqId, {
+        resolve: (msg) => resolve(msg.status === 'ok'),
+        reject: () => resolve(false),
+      });
+      try {
+        this.workerProc?.stdin?.write(JSON.stringify({ cmd: 'set_voice', id: reqId, ref_file: refFile }) + '\n');
+      } catch {
+        this.pendingRequests.delete(reqId);
+        resolve(false);
+      }
+    });
   }
 
   /**
@@ -190,5 +212,17 @@ export class NeuralTTSBridge {
       req.resolve({ status: 'aborted' });
     }
     this.pendingRequests.clear();
+  }
+
+  public shutdown(): void {
+    this.abortAll();
+    if (this.workerProc && !this.workerProc.killed) {
+      try {
+        this.workerProc.kill('SIGTERM');
+      } catch {}
+      this.workerProc = null;
+    }
+    this.isReady = false;
+    this.isStarting = false;
   }
 }

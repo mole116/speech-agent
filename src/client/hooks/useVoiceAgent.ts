@@ -116,7 +116,13 @@ export function useVoiceAgent() {
         try {
           localStorage.setItem('voice_settings', JSON.stringify(updated));
         } catch {}
+        voiceSettingsRef.current = updated;
         audioPlayerRef.current.setVoiceSettings(updated);
+
+        // If user changed away from cloned voice, cancel any pending playback instantly
+        if (!updated.isClonedVoice) {
+          audioPlayerRef.current.cancelAllPlayback();
+        }
 
         sendMessage({
           type: 'set_config',

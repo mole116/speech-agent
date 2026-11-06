@@ -8,7 +8,7 @@
     "dev:client": "vite",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "build": "tsc && vite build",
-    "test": "tsx --test tests/echoFilter.test.ts tests/sentenceSegmenter.test.ts tests/tools.test.ts tests/vad.test.ts tests/voiceSettings.test.ts tests/voiceClone.test.ts tests/protocol.test.ts",
+    "test": "tsx --test tests/echoFilter.test.ts tests/sentenceSegmenter.test.ts tests/tools.test.ts tests/vad.test.ts tests/voiceSettings.test.ts tests/voiceClone.test.ts tests/protocol.test.ts tests/qwen3Tts.test.ts",
     "eval": "tsx tests/evals.ts",
     "start": "tsx src/server/index.ts"
   },

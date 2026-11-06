@@ -16,15 +16,22 @@ export class LocalStreamingTTS {
   private isMac = process.platform === 'darwin';
 
   /**
-   * Synthesize text to an audio buffer using F5-TTS neural voice clone or native macOS 'say'.
+   * Synthesize text to an audio buffer using Qwen3-TTS neural voice clone or native macOS 'say'.
    */
-  public async synthesize(text: string, sentenceIndex: number, abortSignal?: AbortSignal): Promise<SynthesizedChunk | null> {
+  public async synthesize(
+    text: string,
+    sentenceIndex: number,
+    abortSignal?: AbortSignal,
+    engineOverride?: 'browser' | 'say' | 'clone'
+  ): Promise<SynthesizedChunk | null> {
     if (abortSignal?.aborted) {
       return null;
     }
 
-    // 1. Neural Voice Cloning Engine (F5-TTS)
-    if (CONFIG.tts.engine === 'clone') {
+    const engine = engineOverride || CONFIG.tts.engine;
+
+    // 1. Neural Voice Cloning Engine (Qwen3-TTS)
+    if (engine === 'clone') {
       const refWav = path.resolve(process.cwd(), 'storage/voice_profiles/user_voice.wav');
       if (fs.existsSync(refWav)) {
         return NeuralTTSBridge.getInstance().synthesize(text, sentenceIndex, refWav, abortSignal);
@@ -32,7 +39,7 @@ export class LocalStreamingTTS {
     }
 
     // 2. macOS native 'say'
-    if (CONFIG.tts.engine !== 'say' || !this.isMac) {
+    if (engine !== 'say' || !this.isMac) {
       // Browser synth selected
       return null;
     }
