@@ -240,6 +240,7 @@ export const VoiceAgent: React.FC = () => {
             transcript={transcript}
             currentAssistantText={currentAssistantText}
             isStreaming={agentStatus === 'speaking' || agentStatus === 'thinking'}
+            modelName={modelName}
           />
 
           {/* Text Query Input (Fallback & Testing) */}

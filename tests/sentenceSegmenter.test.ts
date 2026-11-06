@@ -47,4 +47,11 @@ describe('SentenceSegmenter (Streaming TTS Tokenizer)', () => {
     const res = segmenter.push('CPU is running at 2.4 GHz with 99.7% memory. ');
     assert.deepStrictEqual(res, ['CPU is running at 2.4 GHz with 99.7% memory.']);
   });
+
+  it('should segment short conversational openers on comma immediately', () => {
+    const segmenter = new SentenceSegmenter();
+    const clauses = segmenter.push('Hello Moshe, how can I help you today?');
+    assert.ok(clauses.length >= 1);
+    assert.strictEqual(clauses[0], 'Hello Moshe,');
+  });
 });

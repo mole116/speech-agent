@@ -5,12 +5,14 @@ interface TranscriptViewProps {
   transcript: TranscriptEntry[];
   currentAssistantText: string;
   isStreaming: boolean;
+  modelName?: string;
 }
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({
   transcript,
   currentAssistantText,
   isStreaming,
+  modelName,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -44,7 +46,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
           >
             <div className="flex items-center space-x-2 px-1">
               <span className="text-xs font-medium text-slate-400">
-                {isUser ? 'You' : 'qwen2.5-coder (Local Ollama)'}
+                {isUser ? 'You' : `${modelName || 'qwen2.5-coder'} (Local Ollama)`}
               </span>
               <span className="text-[10px] text-slate-500">
                 {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}

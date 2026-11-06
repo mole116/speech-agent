@@ -416,7 +416,18 @@ wss.on('connection', (ws: WebSocket) => {
         if (session.currentTurnId !== turnId) return;
         logDebug('Finish', `Assistant [${turnId}]: length=${fullText.length}, interrupted=${interrupted}`);
 
-        // Broadcast final assistant transcript entry immediately
+        // Await all in-flight sentence TTS synthesis tasks for this turn before committing the transcript
+        if (pendingTtsPromises.length > 0) {
+          try {
+            await Promise.all(pendingTtsPromises);
+          } catch (e) {
+            logDebug('Finish', 'TTS synthesis error during completion:', e);
+          }
+        }
+
+        if (session.currentTurnId !== turnId) return;
+
+        // Broadcast final assistant transcript entry once synthesis has completed
         sendJson(ws, {
           type: 'transcript_update',
           turnId,
@@ -429,17 +440,6 @@ wss.on('connection', (ws: WebSocket) => {
             toolCalls: Array.from(session.activeToolCalls.values()),
           },
         });
-
-        // Await all in-flight sentence TTS synthesis tasks for this turn before setting status to idle
-        if (pendingTtsPromises.length > 0) {
-          try {
-            await Promise.all(pendingTtsPromises);
-          } catch (e) {
-            logDebug('Finish', 'TTS synthesis error during completion:', e);
-          }
-        }
-
-        if (session.currentTurnId !== turnId) return;
 
         updateStatus('idle');
       },
